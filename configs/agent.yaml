@@ -22,7 +22,8 @@ metadata_store:
 index:
   backend: chroma
   persist_dir: ${paths.indexes_dir}/chroma
-  collection_name: papers
+  collection_name: papers            # Chroma collection for paper PDFs
+  web_collection_name: web_sources   # separate collection for web content
   chunk_size: 1200
   overlap: 200
 
@@ -39,7 +40,25 @@ llm:
 # ── Agent-specific settings ─────────────────────────────────────────
 agent:
   max_iterations: 3           # max plan→fetch→analyze→synthesize loops
-  papers_per_query: 5         # papers to fetch per search query
+  papers_per_query: 5         # papers to fetch per search query (arXiv)
   max_queries_per_iteration: 3 # search queries generated per iteration
   top_k_for_analysis: 8      # chunks retrieved for per-paper analysis
   language: "en"              # report language: en / zh / auto
+
+# ── Multi-source search ─────────────────────────────────────────────
+sources:
+  arxiv:
+    enabled: true
+    max_results_per_query: 5
+    download_pdf: true
+
+  web:
+    enabled: true
+    max_results_per_query: 8     # DuckDuckGo results per query
+    scrape_pages: true            # fetch full page content
+    scrape_max_chars: 30000       # max chars per page
+    polite_delay_sec: 0.5
+
+  semantic_scholar:
+    enabled: true
+    max_results_per_query: 5

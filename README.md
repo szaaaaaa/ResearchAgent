@@ -3,7 +3,7 @@
 ResearchAgent is a local-first research system with two runnable modes:
 
 - Traditional RAG pipeline (fetch -> parse -> chunk -> index -> retrieve -> answer)
-- Autonomous agent loop built with LangGraph (plan -> fetch -> index -> analyze -> synthesize -> iterate -> report)
+- Autonomous agent loop built with LangGraph (plan -> multi-source fetch -> index -> analyze -> synthesize -> iterate -> report)
 
 This README focuses on practical usage and configuration.
 
@@ -23,13 +23,26 @@ This README focuses on practical usage and configuration.
 
 ### 1.2 Autonomous research agent
 
-- Topic decomposition into research questions and arXiv search queries
-- Iterative paper fetching and indexing
-- Per-paper analysis using RAG + LLM
-- Cross-paper synthesis and gap detection
+- Topic decomposition into research questions, academic queries, and web queries
+- **Multi-source fetching**: arXiv, Semantic Scholar, DuckDuckGo web search
+- Web page scraping via trafilatura
+- Isolated indexing: papers and web content stored in **separate** Chroma collections
+- Per-source analysis: papers via RAG retrieval, web pages via direct LLM analysis
+- Web credibility scoring (`high`/`medium`/`low`) and source-type classification
+- Cross-source synthesis and gap detection
 - Loop control (`should_continue`) up to max iterations
-- Final report generation in Markdown
+- Final report generation in Markdown (EN / ZH)
 - State export to JSON
+
+#### Data sources
+
+| Source | Type | API Key Required | What it provides |
+|--------|------|-----------------|------------------|
+| **arXiv** | Academic papers | No | Full PDF download + metadata |
+| **Semantic Scholar** | Academic papers | No | Metadata + abstracts (broader coverage than arXiv) |
+| **DuckDuckGo** | General web | No | Blogs, docs, news, tutorials, forums |
+
+All three sources are enabled by default and require **no additional API keys** beyond OpenAI.
 
 ### 1.3 Evaluation
 
@@ -55,10 +68,19 @@ ResearchAgent/
     evaluate_rag.py
     run_agent.py
   src/
+    agent/               # LangGraph agent
+      state.py           #   State definition
+      prompts.py         #   Prompt templates
+      nodes.py           #   Graph node functions
+      graph.py           #   Graph construction & runner
     ingest/
+      fetchers.py        #   arXiv fetcher
+      web_fetcher.py     #   DuckDuckGo + Semantic Scholar + web scraping
+      pdf_loader.py
+      chunking.py
+      indexer.py
     rag/
     workflows/
-    agent/
     common/
   data/            # local runtime artifacts (usually gitignored)
   outputs/         # run outputs (usually gitignored)
@@ -70,6 +92,8 @@ ResearchAgent/
 - OpenAI API key (`OPENAI_API_KEY`)
 - Internet access for:
   - arXiv API
+  - Semantic Scholar API
+  - DuckDuckGo search
   - OpenAI API
   - first-time model download from Hugging Face (embedding/reranker), unless cached
 
@@ -97,6 +121,8 @@ Bash:
 ```bash
 export OPENAI_API_KEY="your_api_key"
 ```
+
+No other API keys are needed — web search (DuckDuckGo) and academic search (Semantic Scholar) are free.
 
 ## 5. Configuration
 
@@ -130,6 +156,29 @@ Main fields:
 - `agent.max_queries_per_iteration`
 - `agent.top_k_for_analysis`
 - `agent.language` (`en` or `zh`)
+- `index.collection_name`: Chroma collection for paper PDFs (default `papers`)
+- `index.web_collection_name`: separate Chroma collection for web content (default `web_sources`)
+
+Per-source configuration:
+
+```yaml
+sources:
+  arxiv:
+    enabled: true
+    max_results_per_query: 5
+    download_pdf: true
+
+  web:
+    enabled: true
+    max_results_per_query: 8
+    scrape_pages: true
+    scrape_max_chars: 30000
+    polite_delay_sec: 0.5
+
+  semantic_scholar:
+    enabled: true
+    max_results_per_query: 5
+```
 
 Both configs support `${...}` variable expansion via `src/common/config_utils.py`.
 
@@ -179,7 +228,7 @@ python -m scripts.run_mvp --fetch_query "retrieval augmented generation" --quest
 
 ## 7. Agent mode usage
 
-Basic:
+Basic (searches arXiv + Semantic Scholar + Web by default):
 
 ```powershell
 python -m scripts.run_agent --topic "retrieval augmented generation"
@@ -196,6 +245,51 @@ Chinese report:
 ```powershell
 python -m scripts.run_agent --topic "multimodal large models" --language zh
 ```
+
+Select specific sources:
+
+```powershell
+python -m scripts.run_agent --topic "RAG" --sources arxiv,web
+```
+
+Academic only (no web search):
+
+```powershell
+python -m scripts.run_agent --topic "attention mechanism" --no-web
+```
+
+Fast mode (skip web page scraping, use snippets only):
+
+```powershell
+python -m scripts.run_agent --topic "LangGraph tutorial" --no-scrape
+```
+
+### 7.1 Agent CLI flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--topic` | (required) | Research topic or question |
+| `--config` | `configs/agent.yaml` | Config file path |
+| `--max_iter` | 3 | Maximum research iterations |
+| `--papers_per_query` | 5 | Papers per arXiv search query |
+| `--model` | gpt-4.1-mini | LLM model |
+| `--language` | en | Report language (`en` / `zh`) |
+| `--output_dir` | outputs/ | Output directory |
+| `--sources` | all | Comma-separated: `arxiv,semantic_scholar,web` |
+| `--no-web` | off | Disable web search (arXiv + S2 only) |
+| `--no-scrape` | off | Skip page scraping (snippets only) |
+| `-v` | off | Verbose logging |
+
+### 7.2 How the agent works
+
+1. Decomposes topic into research questions with separate academic and web queries
+2. Fetches papers from **arXiv** and **Semantic Scholar**, plus web results from **DuckDuckGo**
+3. Scrapes full page content from web results via trafilatura
+4. Indexes content into **separate** Chroma collections (papers vs. web)
+5. Analyzes each source — papers via RAG retrieval, web via direct LLM (with credibility scoring)
+6. Synthesizes findings across all sources, distinguishing peer-reviewed vs. informal
+7. Evaluates whether more research is needed (loops back with refined queries if yes)
+8. Generates a comprehensive Markdown research report with proper citations
 
 ## 8. Evaluation usage
 
@@ -261,6 +355,12 @@ Generated files are written under `outputs/`:
 - Hugging Face model download blocked
   - run once with internet to cache models, or use local cache/offline mode
 
+- DuckDuckGo rate limiting
+  - increase `polite_delay_sec` in config or use `--no-web`
+
+- Slow web scraping
+  - use `--no-scrape` for faster runs with snippet-only analysis
+
 ## 12. Notes for GitHub publishing
 
 Recommended `.gitignore` entries:
@@ -273,4 +373,3 @@ Recommended `.gitignore` entries:
 - local DB/index artifacts (`*.sqlite`, `*.db`, `*.bin`)
 
 Never commit API keys or secrets.
-
