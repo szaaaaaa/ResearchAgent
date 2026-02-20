@@ -60,7 +60,17 @@ class Retriever:
         top_k: int = 8,
         candidate_k: int | None = None,
         reranker_model: str | None = None,
+        allowed_doc_ids: list[str] | None = None,
     ) -> List[Dict[str, Any]]:
+        """Retrieve relevant chunks.
+
+        Parameters
+        ----------
+        allowed_doc_ids:
+            When provided, restricts retrieval to chunks whose ``doc_id``
+            metadata field is in this list (run_view isolation).  Pass
+            ``None`` to query the entire collection (traditional RAG mode).
+        """
         if top_k <= 0:
             raise ValueError("top_k must be > 0")
 
@@ -69,11 +79,29 @@ class Retriever:
         n_results = max(top_k, candidate_k or top_k)
 
         q_emb = embed_text(query, model_name=self.model_name).tolist()
-        res = self.col.query(
-            query_embeddings=[q_emb],
-            n_results=n_results,
-            include=["documents", "metadatas", "distances"],
-        )
+        where = {"doc_id": {"$in": list(allowed_doc_ids)}} if allowed_doc_ids else None
+
+        try:
+            res = self.col.query(
+                query_embeddings=[q_emb],
+                n_results=n_results,
+                where=where,
+                include=["documents", "metadatas", "distances"],
+            )
+        except Exception:
+            if where is not None:
+                # Collection has fewer matching docs than n_results — retry with 1
+                try:
+                    res = self.col.query(
+                        query_embeddings=[q_emb],
+                        n_results=1,
+                        where=where,
+                        include=["documents", "metadatas", "distances"],
+                    )
+                except Exception:
+                    return []
+            else:
+                raise
 
         out: List[Dict[str, Any]] = []
         for _id, doc, meta, dist in zip(
@@ -98,6 +126,7 @@ def retrieve(
     model_name: str = "all-MiniLM-L6-v2",
     candidate_k: int | None = None,
     reranker_model: str | None = None,
+    allowed_doc_ids: list[str] | None = None,
 ) -> List[Dict[str, Any]]:
     import chromadb
 
@@ -108,5 +137,6 @@ def retrieve(
         top_k=top_k,
         candidate_k=candidate_k,
         reranker_model=reranker_model,
+        allowed_doc_ids=allowed_doc_ids,
     )
 

@@ -25,7 +25,7 @@ if str(ROOT) not in sys.path:
 from src.common.config_utils import expand_vars, load_yaml
 from src.common.runtime_utils import ensure_dir, now_tag
 
-ALL_SOURCES = ("arxiv", "semantic_scholar", "web")
+ALL_SOURCES = ("arxiv", "google_scholar", "semantic_scholar", "web")
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,11 +43,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Comma-separated list of sources to enable. "
-            "Options: arxiv,semantic_scholar,web  "
+            "Options: arxiv,google_scholar,semantic_scholar,web  "
             "Default: all enabled per config"
         ),
     )
-    p.add_argument("--no-web", action="store_true", help="Disable web search (arXiv + S2 only)")
+    p.add_argument("--no-web", action="store_true", help="Disable web search (academic sources only)")
     p.add_argument("--no-scrape", action="store_true", help="Skip web page scraping (snippets only)")
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     return p.parse_args()
@@ -136,6 +136,10 @@ def main() -> None:
         "topic": final_state.get("topic"),
         "research_questions": final_state.get("research_questions", []),
         "search_queries": final_state.get("search_queries", []),
+        "scope": final_state.get("scope", {}),
+        "budget": final_state.get("budget", {}),
+        "query_routes": final_state.get("query_routes", {}),
+        "memory_summary": final_state.get("memory_summary", ""),
         "papers": [
             {
                 "uid": p.get("uid"),
@@ -155,8 +159,14 @@ def main() -> None:
         ],
         "analyses": final_state.get("analyses", []),
         "findings": final_state.get("findings", []),
+        "claim_evidence_map": final_state.get("claim_evidence_map", []),
+        "evidence_audit_log": final_state.get("evidence_audit_log", []),
         "gaps": final_state.get("gaps", []),
         "synthesis": final_state.get("synthesis", ""),
+        "report_critic": final_state.get("report_critic", {}),
+        "repair_attempted": final_state.get("repair_attempted", False),
+        "run_id": final_state.get("run_id", ""),
+        "acceptance_metrics": final_state.get("acceptance_metrics", {}),
         "iterations": final_state.get("iteration", 0),
         "sources_enabled": enabled,
         "timestamp": datetime.now().isoformat(),

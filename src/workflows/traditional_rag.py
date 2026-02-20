@@ -61,6 +61,7 @@ def index_pdfs(
     max_pages: int | None = None,
     keep_old: bool = False,
     single_doc_id: str | None = None,
+    run_id: str = "",
 ) -> Dict[str, Any]:
     from src.ingest.chunking import chunk_text
     from src.ingest.indexer import build_chroma_index
@@ -76,7 +77,9 @@ def index_pdfs(
         loaded = load_pdf_text(str(pdf), max_pages=max_pages)
         chunks = chunk_text(loaded.text, chunk_size=chunk_size, overlap=overlap)
 
-        if not keep_old:
+        # In agent mode (run_id set): skip deletion so the global index stays
+        # coherent across runs. Dedup is handled inside build_chroma_index.
+        if not run_id and not keep_old:
             _delete_old_chunks(persist_dir, collection_name, doc_id)
 
         added = build_chroma_index(
@@ -84,6 +87,7 @@ def index_pdfs(
             collection_name=collection_name,
             chunks=chunks,
             doc_id=doc_id,
+            run_id=run_id,
         )
 
         rows.append(

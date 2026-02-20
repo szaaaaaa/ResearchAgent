@@ -16,7 +16,14 @@ def build_chroma_index(
     collection_name: str,
     chunks: List[Chunk],
     doc_id: str,
+    run_id: str = "",
 ) -> int:
+    """Index chunks into Chroma.
+
+    When ``run_id`` is provided (agent mode), performs a cross-run dedup check:
+    if this ``doc_id`` is already present in the collection it is skipped
+    entirely so documents are stored only once globally.
+    """
     Path(persist_dir).mkdir(parents=True, exist_ok=True)
 
     client = chromadb.PersistentClient(path=persist_dir)
@@ -31,6 +38,15 @@ def build_chroma_index(
         metadata={"hnsw:space": "cosine"},
     )
 
+    # Cross-run dedup: if this doc is already in the collection, skip re-embedding.
+    if run_id:
+        try:
+            existing = col.get(where={"doc_id": doc_id}, include=[], limit=1)
+            if existing and existing.get("ids"):
+                return 0  # already indexed globally, reuse existing chunks
+        except Exception:
+            pass  # get() failed — fall through and index normally
+
     ids = [f"{doc_id}:{c.chunk_id}" for c in chunks]
     docs = [c.text for c in chunks]
     metas: List[Dict[str, Any]] = [
@@ -39,6 +55,7 @@ def build_chroma_index(
             "chunk_id": c.chunk_id,
             "start_char": c.start_char,
             "end_char": c.end_char,
+            "run_id": run_id,
         }
         for c in chunks
     ]

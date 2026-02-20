@@ -1,0 +1,19 @@
+Metadata-Version: 2.4
+Name: research-agent
+Version: 0.2.0
+Summary: Autonomous research agent powered by LangGraph
+Requires-Python: >=3.10
+Requires-Dist: feedparser>=6.0.0
+Requires-Dist: langgraph>=0.2.0
+Requires-Dist: langchain-openai>=0.2.0
+Requires-Dist: langchain-core>=0.3.0
+Requires-Dist: openai>=1.0.0
+Requires-Dist: chromadb>=0.4.0
+Requires-Dist: sentence-transformers>=2.2.0
+Requires-Dist: pymupdf>=1.23.0
+Requires-Dist: requests>=2.31.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: duckduckgo-search>=6.0.0
+Requires-Dist: trafilatura>=1.6.0
+Requires-Dist: beautifulsoup4>=4.12.0

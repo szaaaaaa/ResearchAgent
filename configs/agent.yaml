@@ -30,11 +30,11 @@ index:
 retrieval:
   top_k: 10
   candidate_k: 30
-  reranker_model: ""
+  reranker_model: "BAAI/bge-reranker-base"
 
 # ── LLM settings ────────────────────────────────────────────────────
 llm:
-  model: gpt-4.1-mini
+  model: gpt-5.2
   temperature: 0.3
 
 # ── Agent-specific settings ─────────────────────────────────────────
@@ -44,6 +44,30 @@ agent:
   max_queries_per_iteration: 3 # search queries generated per iteration
   top_k_for_analysis: 8      # chunks retrieved for per-paper analysis
   language: "en"              # report language: en / zh / auto
+  report_max_sources: 40      # max deduplicated references in final report
+  budget:
+    max_research_questions: 3
+    max_sections: 5
+    max_references: 20
+  source_ranking:
+    core_min_a_ratio: 0.7
+    background_max_c: 3
+  dynamic_retrieval:
+    simple_query_academic: false
+    simple_query_pdf: false
+  memory:
+    max_findings_for_context: 20
+    max_context_chars: 3500
+  topic_filter:
+    min_keyword_hits: 1
+    include_terms: []
+    block_terms:
+      - hanabi
+      - quantum
+      - software registries
+      - route choice
+      - value systems of agents
+      - multi-agent deep reinforcement learning with communication
 
 # ── Multi-source search ─────────────────────────────────────────────
 sources:
@@ -52,9 +76,21 @@ sources:
     max_results_per_query: 5
     download_pdf: true
 
+  google_scholar:
+    enabled: true
+    max_results_per_query: 5
+
   web:
     enabled: true
-    max_results_per_query: 8     # DuckDuckGo results per query
+    max_results_per_query: 8
+    overfetch_factor: 3           # fetch more, then rerank/filter down
+    prefer_google: true           # use Google (SerpAPI) before DDG when available
+    google_hl: en
+    google_gl: us
+    ddg_region: us-en
+    prefer_english: true          # rank English/global sources first
+    max_chinese_ratio: 0.25       # Chinese sources are fallback quota
+    blocked_domains: []           # e.g. ["zhidao.baidu.com"]
     scrape_pages: true            # fetch full page content
     scrape_max_chars: 30000       # max chars per page
     polite_delay_sec: 0.5

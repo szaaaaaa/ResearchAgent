@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib.parse import urlparse
 
 from src.agent.prompts import (
     ANALYZE_PAPER_SYSTEM,
@@ -29,6 +32,52 @@ from src.agent.prompts import (
 from src.agent.state import ResearchState
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_TOPIC_BLOCK_TERMS = [
+    "hanabi",
+    "quantum",
+    "software registries",
+    "route choice",
+    "value systems of agents",
+    "multi-agent deep reinforcement learning with communication",
+]
+_STOPWORDS = {
+    "the", "and", "for", "with", "from", "that", "this", "are", "can", "what", "how",
+    "why", "when", "where", "which", "best", "across", "into", "using", "used", "than",
+    "between", "over", "under", "through", "about", "agentic", "traditional", "systems",
+    "system", "study", "survey", "analysis", "framework", "frameworks",
+}
+
+_ACADEMIC_DOMAINS = {
+    "arxiv.org",
+    "aclanthology.org",
+    "ieeexplore.ieee.org",
+    "openreview.net",
+    "dl.acm.org",
+    "springer.com",
+    "link.springer.com",
+    "neurips.cc",
+    "jmlr.org",
+}
+_ENGINEERING_DOMAINS = {
+    "developer.nvidia.com",
+    "aws.amazon.com",
+    "research.ibm.com",
+    "cloud.google.com",
+    "developers.googleblog.com",
+    "learn.microsoft.com",
+    "openai.com",
+    "anthropic.com",
+    "langchain.com",
+}
+_SIMPLE_QUERY_TERMS = {
+    "what is", "intro", "introduction", "guide", "tutorial", "vs", "difference",
+    "overview", "best practices", "compare", "comparison", "是什么", "区别", "对比", "入门",
+}
+_DEEP_QUERY_TERMS = {
+    "benchmark", "evaluation", "privacy", "governance", "architecture", "framework",
+    "algorithm", "ablation", "latency", "token", "memory", "theorem", "proof",
+}
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -71,6 +120,615 @@ def _source_enabled(cfg: Dict[str, Any], source_name: str) -> bool:
     return cfg.get("sources", {}).get(source_name, {}).get("enabled", True)
 
 
+def _infer_intent(topic: str) -> str:
+    t = (topic or "").lower()
+    if any(k in t for k in [" vs ", "versus", "difference", "compare", "comparison", "对比", "差异"]):
+        return "comparison"
+    if any(k in t for k in ["roadmap", "路线图", "migration"]):
+        return "roadmap"
+    return "survey"
+
+
+def _default_sections_for_intent(intent: str) -> List[str]:
+    if intent == "comparison":
+        return [
+            "Architecture and Workflow Differences",
+            "Quality, Failure Modes, and Trade-offs",
+            "Evaluation and Evidence",
+            "Practical Recommendations",
+            "Limitations and Future Work",
+        ]
+    if intent == "roadmap":
+        return [
+            "Current Baseline",
+            "Gap Analysis",
+            "Phased Roadmap",
+            "Risks and Dependencies",
+            "Validation Plan",
+        ]
+    return [
+        "Background",
+        "Methods and Taxonomy",
+        "Key Findings",
+        "Limitations",
+        "Future Work",
+    ]
+
+
+def _load_budget_and_scope(state: ResearchState, cfg: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, int]]:
+    existing_scope = state.get("scope") or {}
+    existing_budget = state.get("budget") or {}
+    if existing_scope and existing_budget:
+        return existing_scope, existing_budget
+
+    agent_cfg = cfg.get("agent", {})
+    budget_cfg = agent_cfg.get("budget", {})
+    budget = {
+        "max_research_questions": int(budget_cfg.get("max_research_questions", 3)),
+        "max_sections": int(budget_cfg.get("max_sections", 5)),
+        "max_references": int(budget_cfg.get("max_references", 20)),
+    }
+    intent = _infer_intent(state.get("topic", ""))
+    allowed = _default_sections_for_intent(intent)[: max(1, budget["max_sections"])]
+    scope = {
+        "intent": intent,
+        "allowed_sections": allowed,
+        "out_of_scope_policy": "future_work_only",
+    }
+    return scope, budget
+
+
+def _compress_findings_for_context(
+    findings: List[str],
+    *,
+    max_items: int,
+    max_chars: int,
+) -> str:
+    if not findings:
+        return "(none yet)"
+    seen = set()
+    compact: List[str] = []
+    for f in reversed(findings):
+        s = re.sub(r"\s+", " ", str(f or "")).strip()
+        if not s:
+            continue
+        k = s.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        compact.append(s)
+        if len(compact) >= max(1, int(max_items)):
+            break
+    compact.reverse()
+    out: List[str] = []
+    total = 0
+    for item in compact:
+        line = f"- {item}"
+        if total + len(line) > max(300, int(max_chars)):
+            break
+        out.append(line)
+        total += len(line) + 1
+    return "\n".join(out) if out else "(none yet)"
+
+
+def _is_simple_query(query: str) -> bool:
+    q = (query or "").lower()
+    has_simple = any(term in q for term in _SIMPLE_QUERY_TERMS)
+    has_deep = any(term in q for term in _DEEP_QUERY_TERMS)
+    return has_simple and not has_deep
+
+
+def _route_query(query: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    dyn_cfg = cfg.get("agent", {}).get("dynamic_retrieval", {})
+    simple = _is_simple_query(query)
+    use_academic = (not simple) or bool(dyn_cfg.get("simple_query_academic", False))
+    use_web = True
+    download_pdf = use_academic and ((not simple) or bool(dyn_cfg.get("simple_query_pdf", False)))
+    return {
+        "simple": simple,
+        "use_web": use_web,
+        "use_academic": use_academic,
+        "download_pdf": download_pdf,
+    }
+
+
+def _extract_table_signals(text: str, max_lines: int = 6) -> List[str]:
+    signals: List[str] = []
+    for ln in (text or "").splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        if "|" in s or "\t" in s:
+            signals.append(s[:200])
+        elif s.count(",") >= 4 and sum(ch.isdigit() for ch in s) >= 2:
+            signals.append(s[:200])
+        if len(signals) >= max_lines:
+            break
+    return signals
+
+
+def _extract_domain(url: str) -> str:
+    if not url:
+        return ""
+    try:
+        netloc = urlparse(url).netloc.lower().strip()
+    except Exception:
+        return ""
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    return netloc
+
+
+def _source_tier(a: Dict[str, Any]) -> str:
+    uid = str(a.get("uid") or "").lower().strip()
+    source = str(a.get("source") or "").lower().strip()
+    url = str(a.get("url") or "").strip() or _uid_to_resolvable_url(uid)
+    domain = _extract_domain(url)
+
+    if uid.startswith("arxiv:") or uid.startswith("doi:"):
+        return "A"
+    if domain in _ACADEMIC_DOMAINS:
+        return "A"
+    if source in {"arxiv", "semantic_scholar", "google_scholar"}:
+        return "A"
+    if domain in _ENGINEERING_DOMAINS:
+        return "B"
+    return "C"
+
+
+def _analysis_score_for_rq(rq: str, a: Dict[str, Any]) -> float:
+    rq_tokens = {t for t in _tokenize(rq) if t not in _STOPWORDS}
+    text = " ".join(
+        [
+            str(a.get("title") or ""),
+            str(a.get("summary") or ""),
+            " ".join(a.get("key_findings", []) if isinstance(a.get("key_findings"), list) else []),
+        ]
+    )
+    overlap = len(rq_tokens & set(_tokenize(text)))
+    relevance = float(a.get("relevance_score", 0.0) or 0.0)
+    tier = _source_tier(a)
+    tier_bonus = 0.35 if tier == "A" else (0.15 if tier == "B" else 0.0)
+    return relevance + overlap * 0.08 + tier_bonus
+
+
+def _build_claim_evidence_map(
+    *,
+    research_questions: List[str],
+    analyses: List[Dict[str, Any]],
+    core_min_a_ratio: float,
+) -> List[Dict[str, Any]]:
+    claims: List[Dict[str, Any]] = []
+    for rq in research_questions:
+        ranked = sorted(analyses, key=lambda a: _analysis_score_for_rq(rq, a), reverse=True)
+        if not ranked:
+            claims.append(
+                {
+                    "research_question": rq,
+                    "claim": f"Insufficient evidence collected for: {rq}",
+                    "evidence": [],
+                    "strength": "C",
+                    "caveat": "No usable sources were mapped to this question.",
+                }
+            )
+            continue
+
+        ab = [a for a in ranked if _source_tier(a) in {"A", "B"}]
+        selected = ab[:3]
+        if len(selected) < 2:
+            for cand in ranked:
+                if cand in selected:
+                    continue
+                selected.append(cand)
+                if len(selected) >= 3:
+                    break
+
+        best = selected[0]
+        claim_text = ""
+        kf = best.get("key_findings", [])
+        if isinstance(kf, list) and kf:
+            claim_text = str(kf[0]).strip()
+        if not claim_text:
+            claim_text = str(best.get("summary") or "").split(".")[0].strip()
+        if not claim_text:
+            claim_text = f"Evidence indicates a meaningful difference related to: {rq}"
+
+        evidence = []
+        for src in selected:
+            src_url = str(src.get("url") or "").strip() or _uid_to_resolvable_url(str(src.get("uid") or ""))
+            src_kf = src.get("key_findings", [])
+            snippet = src_kf[0] if isinstance(src_kf, list) and src_kf else str(src.get("summary") or "")[:180]
+            evidence.append(
+                {
+                    "uid": src.get("uid"),
+                    "title": src.get("title"),
+                    "url": src_url,
+                    "tier": _source_tier(src),
+                    "snippet": str(snippet).strip(),
+                }
+            )
+
+        a_count = sum(1 for e in evidence if e["tier"] == "A")
+        ab_count = sum(1 for e in evidence if e["tier"] in {"A", "B"})
+        a_ratio = (a_count / max(1, len(evidence)))
+        if ab_count >= 2 and a_ratio >= core_min_a_ratio:
+            strength = "A"
+        elif ab_count >= 2:
+            strength = "B"
+        else:
+            strength = "C"
+
+        limitations = best.get("limitations", [])
+        caveat = limitations[0] if isinstance(limitations, list) and limitations else "Evidence may be domain-specific."
+
+        claims.append(
+            {
+                "research_question": rq,
+                "claim": claim_text,
+                "evidence": evidence[:3],
+                "strength": strength,
+                "caveat": caveat,
+            }
+        )
+    return claims
+
+
+def _build_evidence_audit_log(
+    *,
+    research_questions: List[str],
+    claim_map: List[Dict[str, Any]],
+    core_min_a_ratio: float,
+) -> List[Dict[str, Any]]:
+    logs: List[Dict[str, Any]] = []
+    for rq in research_questions:
+        rq_claims = [c for c in claim_map if c.get("research_question") == rq]
+        evidences = [e for c in rq_claims for e in c.get("evidence", [])]
+        a_cnt = sum(1 for e in evidences if e.get("tier") == "A")
+        ab_cnt = sum(1 for e in evidences if e.get("tier") in {"A", "B"})
+        a_ratio = (a_cnt / max(1, len(evidences))) if evidences else 0.0
+        gaps: List[str] = []
+        if len(evidences) < 2:
+            gaps.append("evidence_count_below_2")
+        if ab_cnt < 2:
+            gaps.append("ab_evidence_below_2")
+        if a_ratio < core_min_a_ratio:
+            gaps.append("a_ratio_below_threshold")
+        logs.append(
+            {
+                "research_question": rq,
+                "claims_count": len(rq_claims),
+                "evidence_count": len(evidences),
+                "a_count": a_cnt,
+                "ab_count": ab_cnt,
+                "a_ratio": round(a_ratio, 3),
+                "gaps": gaps,
+            }
+        )
+    return logs
+
+
+def _format_claim_map(claim_map: List[Dict[str, Any]]) -> str:
+    parts: List[str] = []
+    for i, c in enumerate(claim_map, 1):
+        parts.append(f"{i}. Claim ({c.get('strength', 'C')}): {c.get('claim', '')}")
+        parts.append(f"   RQ: {c.get('research_question', '')}")
+        for e in c.get("evidence", []):
+            parts.append(
+                f"   - [{e.get('tier', 'C')}] {e.get('title', 'Unknown')} "
+                f"({e.get('url') or e.get('uid') or 'no-id'})"
+            )
+        parts.append(f"   Caveat: {c.get('caveat', '')}")
+    return "\n".join(parts) if parts else "(no claim-evidence map)"
+
+
+def _extract_reference_urls(report: str) -> List[str]:
+    out: List[str] = []
+    for line in report.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if re.match(r"^(-|\d+\.)\s+", s):
+            m = re.search(r"(https?://\S+)", s)
+            if m:
+                out.append(m.group(1).rstrip(").,"))
+    return out
+
+
+def _critic_report(
+    *,
+    topic: str,
+    report: str,
+    research_questions: List[str],
+    claim_map: List[Dict[str, Any]],
+    max_refs: int,
+    max_sections: int,
+    block_terms: List[str],
+) -> Dict[str, Any]:
+    issues: List[str] = []
+    refs = _extract_reference_urls(report)
+    if not refs:
+        issues.append("missing_references")
+    if len(refs) > max_refs:
+        issues.append("reference_budget_exceeded")
+
+    core_sections = []
+    for ln in report.splitlines():
+        s = ln.strip()
+        if s.startswith("## "):
+            name = s[3:].strip().lower()
+            if "references" in name or "abstract" in name:
+                continue
+            core_sections.append(name)
+    if len(core_sections) > max_sections:
+        issues.append("section_budget_exceeded")
+
+    topic_tokens = {t for t in _tokenize(topic) if t not in _STOPWORDS}
+    report_tokens = set(_tokenize(report))
+    if topic_tokens and len(topic_tokens & report_tokens) / max(1, len(topic_tokens)) < 0.5:
+        issues.append("topic_misalignment")
+
+    if research_questions:
+        covered = 0
+        for rq in research_questions:
+            rq_tokens = [t for t in _tokenize(rq) if t not in _STOPWORDS]
+            if not rq_tokens:
+                continue
+            if any(t in report_tokens for t in rq_tokens):
+                covered += 1
+        if covered < max(1, int(len(research_questions) * 0.7)):
+            issues.append("research_question_coverage_low")
+
+    # Check claim-evidence appearance in final text.
+    report_l = report.lower()
+    missing_claim_evidence = 0
+    for c in claim_map:
+        claim = str(c.get("claim") or "").strip().lower()
+        ev = c.get("evidence", [])
+        has_ev = any((str(e.get("url") or "").lower() in report_l) or (str(e.get("title") or "").lower()[:40] in report_l) for e in ev)
+        if claim and claim[:40] not in report_l:
+            missing_claim_evidence += 1
+        if not has_ev:
+            missing_claim_evidence += 1
+    if missing_claim_evidence > max(1, len(claim_map) // 2):
+        issues.append("claim_evidence_mapping_weak")
+
+    lowered = report.lower()
+    off_topic_hits = [bt for bt in block_terms if bt and bt.lower() in lowered]
+    if off_topic_hits:
+        issues.append(f"off_topic_terms:{', '.join(off_topic_hits[:5])}")
+
+    return {"pass": len(issues) == 0, "issues": issues}
+
+
+def _repair_report_once(
+    *,
+    report: str,
+    issues: List[str],
+    topic: str,
+    research_questions: List[str],
+    claim_map_text: str,
+    allowed_refs: List[str],
+    max_refs: int,
+    model: str,
+    temperature: float,
+) -> str:
+    if not issues:
+        return report
+    repair_system = (
+        "You are a strict report editor. Repair the report with minimal edits, "
+        "focusing only on listed quality issues."
+    )
+    repair_user = (
+        f"Topic: {topic}\n\n"
+        f"Research questions:\n" + "\n".join(f"- {q}" for q in research_questions) + "\n\n"
+        f"Issues to fix:\n" + "\n".join(f"- {i}" for i in issues) + "\n\n"
+        f"Claim-Evidence Map:\n{claim_map_text}\n\n"
+        f"Allowed references (do not add others, max {max_refs}):\n"
+        + ("\n".join(allowed_refs) if allowed_refs else "- (none)")
+        + "\n\nCurrent report:\n"
+        + report
+        + "\n\nReturn a repaired Markdown report only."
+    )
+    try:
+        return _llm_call(repair_system, repair_user, model=model, temperature=temperature)
+    except Exception:
+        return report
+
+
+def _tokenize(text: str) -> List[str]:
+    return re.findall(r"[a-z0-9]{2,}", (text or "").lower())
+
+
+def _compute_acceptance_metrics(
+    *,
+    evidence_audit_log: List[Dict[str, Any]],
+    report_critic: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Compute quantitative acceptance metrics from audit data.
+
+    Metrics
+    -------
+    avg_a_evidence_ratio        : mean A-tier evidence ratio across all RQs (target >= 0.70)
+    a_ratio_pass                : True if avg_a_evidence_ratio >= 0.70
+    rq_min2_evidence_rate       : fraction of RQs with >= 2 evidence items (target >= 0.90)
+    rq_coverage_pass            : True if rq_min2_evidence_rate >= 0.90
+    reference_budget_compliant  : True if critic did not flag reference_budget_exceeded
+    run_view_isolation_active   : always True when run_id is in use (marker for cross-contamination tracking)
+    """
+    if not evidence_audit_log:
+        return {
+            "avg_a_evidence_ratio": 0.0,
+            "a_ratio_pass": False,
+            "rq_min2_evidence_rate": 0.0,
+            "rq_coverage_pass": False,
+            "reference_budget_compliant": "reference_budget_exceeded" not in report_critic.get("issues", []),
+            "run_view_isolation_active": True,
+            "note": "no evidence_audit_log available",
+        }
+
+    a_ratios = [float(x.get("a_ratio", 0.0)) for x in evidence_audit_log]
+    avg_a_ratio = sum(a_ratios) / len(a_ratios)
+
+    rqs_with_2plus = sum(1 for x in evidence_audit_log if int(x.get("evidence_count", 0)) >= 2)
+    rq_coverage_rate = rqs_with_2plus / len(evidence_audit_log)
+
+    ref_compliant = "reference_budget_exceeded" not in report_critic.get("issues", [])
+
+    return {
+        "avg_a_evidence_ratio": round(avg_a_ratio, 3),
+        "a_ratio_pass": avg_a_ratio >= 0.70,
+        "rq_min2_evidence_rate": round(rq_coverage_rate, 3),
+        "rq_coverage_pass": rq_coverage_rate >= 0.90,
+        "reference_budget_compliant": ref_compliant,
+        "run_view_isolation_active": True,
+        "critic_issues": report_critic.get("issues", []),
+    }
+
+
+def _build_topic_keywords(state: ResearchState, cfg: Dict[str, Any]) -> set[str]:
+    raw = " ".join(
+        [state.get("topic", "")]
+        + state.get("research_questions", [])
+        + state.get("search_queries", [])
+    )
+    custom = cfg.get("agent", {}).get("topic_filter", {}).get("include_terms", [])
+    raw += " " + " ".join(custom if isinstance(custom, list) else [])
+    tokens = {t for t in _tokenize(raw) if t not in _STOPWORDS}
+    # Keep core RAG terms even if short/common.
+    tokens.update({"rag", "retrieval", "augmented", "agentic"})
+    return tokens
+
+
+def _is_topic_relevant(
+    *,
+    text: str,
+    topic_keywords: set[str],
+    block_terms: List[str],
+    min_hits: int = 1,
+) -> bool:
+    lowered = (text or "").lower()
+    if any(bt and bt.lower() in lowered for bt in block_terms):
+        return False
+    token_set = set(_tokenize(lowered))
+    hits = len(topic_keywords & token_set)
+    return hits >= max(1, int(min_hits))
+
+
+def _has_traceable_source(a: Dict[str, Any]) -> bool:
+    url = str(a.get("url") or "").strip()
+    uid = str(a.get("uid") or "").strip().lower()
+    if url:
+        parsed = urlparse(url)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return True
+    return uid.startswith("arxiv:") or uid.startswith("doi:")
+
+
+def _uid_to_resolvable_url(uid: str) -> str:
+    u = (uid or "").strip()
+    if not u:
+        return ""
+    low = u.lower()
+    if low.startswith("arxiv:"):
+        return f"https://arxiv.org/abs/{u.split(':', 1)[1]}"
+    if low.startswith("doi:"):
+        return f"https://doi.org/{u.split(':', 1)[1]}"
+    return ""
+
+
+def _normalize_source_url(url: str) -> str:
+    u = (url or "").strip()
+    if not u:
+        return ""
+    try:
+        parsed = urlparse(u)
+    except Exception:
+        return u
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        path = parsed.path.rstrip("/")
+        return f"{parsed.scheme}://{parsed.netloc}{path}"
+    return u
+
+
+def _source_dedupe_key(a: Dict[str, Any]) -> str:
+    uid = str(a.get("uid") or "").strip().lower()
+    if uid:
+        return f"uid:{uid}"
+    nurl = _normalize_source_url(str(a.get("url") or ""))
+    if nurl:
+        return f"url:{nurl}"
+    title = re.sub(r"\s+", " ", str(a.get("title") or "").strip().lower())
+    return f"title:{title}"
+
+
+def _dedupe_and_rank_analyses(analyses: List[Dict[str, Any]], max_items: int) -> List[Dict[str, Any]]:
+    dedup: Dict[str, Dict[str, Any]] = {}
+    for a in analyses:
+        x = dict(a)
+        if not x.get("url"):
+            x["url"] = _uid_to_resolvable_url(str(x.get("uid") or ""))
+        key = _source_dedupe_key(x)
+        prev = dedup.get(key)
+        if prev is None:
+            dedup[key] = x
+            continue
+        prev_score = float(prev.get("relevance_score", 0) or 0)
+        cur_score = float(x.get("relevance_score", 0) or 0)
+        if cur_score > prev_score:
+            dedup[key] = x
+    ranked = sorted(
+        dedup.values(),
+        key=lambda i: (
+            float(i.get("relevance_score", 0) or 0),
+            1 if str(i.get("source") or "").lower() in {"arxiv", "google_scholar", "semantic_scholar"} else 0,
+        ),
+        reverse=True,
+    )
+    return ranked[: max(1, int(max_items))]
+
+
+def _clean_reference_section(report: str, max_refs: int) -> str:
+    lines = report.splitlines()
+    ref_idx = None
+    for i, line in enumerate(lines):
+        if re.match(r"^\s{0,3}#{1,6}\s*(?:\d+\.?\s*)?(References|参考文献)\s*$", line.strip(), flags=re.IGNORECASE):
+            ref_idx = i
+            break
+    if ref_idx is None:
+        return report
+
+    head = lines[: ref_idx + 1]
+    tail = lines[ref_idx + 1 :]
+
+    dedup_refs: List[str] = []
+    seen: set[str] = set()
+    for line in tail:
+        s = line.strip()
+        if not s:
+            continue
+        if re.match(r"^\s{0,3}#{1,6}\s+", s):
+            # Stop at next heading.
+            break
+        if not re.match(r"^(-|\d+\.)\s+", s):
+            continue
+
+        m_md = re.search(r"\((https?://[^\s)]+)\)", s)
+        m_raw = re.search(r"(https?://\S+)", s)
+        url = m_md.group(1) if m_md else (m_raw.group(1) if m_raw else "")
+        key = _normalize_source_url(url) if url else re.sub(r"\s+", " ", s.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup_refs.append(re.sub(r"^(-|\d+\.)\s+", "", s).strip())
+        if len(dedup_refs) >= max(1, int(max_refs)):
+            break
+
+    if not dedup_refs:
+        return report
+    renumbered = [f"{i}. {item}" for i, item in enumerate(dedup_refs, 1)]
+    return "\n".join(head + [""] + renumbered) + "\n"
+
+
 # ── Node: plan_research ──────────────────────────────────────────────
 
 
@@ -81,11 +739,17 @@ def plan_research(state: ResearchState) -> Dict[str, Any]:
     cfg = _get_cfg(state)
     model = cfg.get("llm", {}).get("model", "gpt-4.1-mini")
     temperature = cfg.get("llm", {}).get("temperature", 0.3)
+    scope, budget = _load_budget_and_scope(state, cfg)
 
     # Build context for refinement iterations
     context = ""
     if iteration > 0:
-        prev_findings = "\n".join(f"- {f}" for f in state.get("findings", []))
+        mem_cfg = cfg.get("agent", {}).get("memory", {})
+        prev_findings = _compress_findings_for_context(
+            state.get("findings", []),
+            max_items=int(mem_cfg.get("max_findings_for_context", 20)),
+            max_chars=int(mem_cfg.get("max_context_chars", 3500)),
+        )
         prev_gaps = "\n".join(f"- {g}" for g in state.get("gaps", []))
         prev_queries = ", ".join(state.get("search_queries", []))
         context = PLAN_RESEARCH_REFINE_CONTEXT.format(
@@ -94,7 +758,16 @@ def plan_research(state: ResearchState) -> Dict[str, Any]:
             previous_queries=prev_queries or "(none)",
         )
 
-    prompt = PLAN_RESEARCH_USER.format(topic=topic, context=context)
+    prompt = PLAN_RESEARCH_USER.format(
+        topic=topic,
+        context=context
+        + (
+            f"\n\nScope intent: {scope.get('intent')}\n"
+            f"Allowed sections: {', '.join(scope.get('allowed_sections', []))}\n"
+            f"Budget limits: RQ <= {budget['max_research_questions']}, "
+            f"Sections <= {budget['max_sections']}, References <= {budget['max_references']}\n\n"
+        ),
+    )
 
     raw = _llm_call(PLAN_RESEARCH_SYSTEM, prompt, model=model, temperature=temperature)
 
@@ -111,17 +784,30 @@ def plan_research(state: ResearchState) -> Dict[str, Any]:
     max_q = cfg.get("agent", {}).get("max_queries_per_iteration", 3)
     academic_queries = result.get("academic_queries", result.get("search_queries", [topic]))[:max_q]
     web_queries = result.get("web_queries", [topic])[:max_q]
+    research_questions = result.get("research_questions", [])[: max(1, budget["max_research_questions"])]
 
     # Merge all queries into a unified list for state tracking
     all_queries = list(dict.fromkeys(academic_queries + web_queries))
+    query_routes = {q: _route_query(q, cfg) for q in all_queries}
+
+    # Route simple academic queries to web-only path to save retrieval cost.
+    routed_academic = [q for q in academic_queries if query_routes.get(q, {}).get("use_academic", True)]
+    routed_web = list(dict.fromkeys(web_queries + [q for q in academic_queries if query_routes.get(q, {}).get("use_web", False) and q not in web_queries]))
 
     return {
-        "research_questions": result.get("research_questions", []),
+        "research_questions": research_questions,
         "search_queries": all_queries,
+        "scope": scope,
+        "budget": budget,
+        "query_routes": query_routes,
+        "memory_summary": prev_findings if iteration > 0 else "",
         # Store typed queries for the fetch node
-        "_academic_queries": academic_queries,
-        "_web_queries": web_queries,
-        "status": f"Iteration {iteration}: planned {len(academic_queries)} academic + {len(web_queries)} web queries",
+        "_academic_queries": routed_academic,
+        "_web_queries": routed_web,
+        "status": (
+            f"Iteration {iteration}: planned {len(routed_academic)} academic + "
+            f"{len(routed_web)} web queries under scoped budget"
+        ),
     }
 
 
@@ -137,9 +823,29 @@ def fetch_sources(state: ResearchState) -> Dict[str, Any]:
 
     academic_queries = state.get("_academic_queries", state.get("search_queries", []))
     web_queries = state.get("_web_queries", state.get("search_queries", []))
+    query_routes = state.get("query_routes", {})
+
+    # Apply rule-based dynamic retrieval routing.
+    effective_academic_queries = [
+        q for q in academic_queries if query_routes.get(q, {}).get("use_academic", True)
+    ]
+    effective_web_queries = list(
+        dict.fromkeys(
+            [q for q in web_queries if query_routes.get(q, {}).get("use_web", True)]
+            + [
+                q for q in academic_queries
+                if query_routes.get(q, {}).get("use_web", False)
+                and q not in web_queries
+            ]
+        )
+    )
 
     existing_uids = {p["uid"] for p in state.get("papers", [])}
     existing_web_uids = {w["uid"] for w in state.get("web_sources", [])}
+    topic_keywords = _build_topic_keywords(state, cfg)
+    topic_filter_cfg = cfg.get("agent", {}).get("topic_filter", {})
+    block_terms = topic_filter_cfg.get("block_terms", _DEFAULT_TOPIC_BLOCK_TERMS)
+    min_hits = int(topic_filter_cfg.get("min_keyword_hits", 1))
 
     new_papers: List[Dict[str, Any]] = []
     new_web: List[Dict[str, Any]] = []
@@ -155,18 +861,28 @@ def fetch_sources(state: ResearchState) -> Dict[str, Any]:
         papers_dir = str((root / cfg.get("paths", {}).get("papers_dir", "data/papers")).resolve())
         sqlite_path = str((root / cfg.get("metadata_store", {}).get("sqlite_path", "data/metadata/papers.sqlite")).resolve())
 
-        for q in academic_queries:
+        for q in effective_academic_queries:
             logger.info("[arXiv] Searching: %s (max %d)", q, per_query)
             try:
+                route = query_routes.get(q, {})
                 records = fetch_arxiv_and_store(
                     query=q,
                     sqlite_path=sqlite_path,
                     papers_dir=papers_dir,
                     max_results=per_query,
-                    download=download,
+                    download=bool(route.get("download_pdf", download)),
                     polite_delay_sec=delay,
                 )
                 for r in records:
+                    rel_text = f"{r.title} {r.abstract}"
+                    if not _is_topic_relevant(
+                        text=rel_text,
+                        topic_keywords=topic_keywords,
+                        block_terms=block_terms,
+                        min_hits=min_hits,
+                    ):
+                        logger.debug("[TopicFilter] Drop arXiv paper: %s", r.title)
+                        continue
                     if r.uid not in existing_uids:
                         new_papers.append({
                             "uid": r.uid,
@@ -181,48 +897,113 @@ def fetch_sources(state: ResearchState) -> Dict[str, Any]:
             except Exception as e:
                 logger.error("[arXiv] Failed for '%s': %s", q, e)
 
-    # ── Semantic Scholar ─────────────────────────────────────────────
-    if _source_enabled(cfg, "semantic_scholar"):
-        from src.ingest.web_fetcher import search_semantic_scholar
+    # ── Academic search: Google Scholar first, Semantic Scholar fallback ──
+    if _source_enabled(cfg, "google_scholar") or _source_enabled(cfg, "semantic_scholar"):
+        from src.ingest.web_fetcher import dedup_results, search_google_scholar, search_semantic_scholar
 
+        gs_cfg = sources_cfg.get("google_scholar", {})
         s2_cfg = sources_cfg.get("semantic_scholar", {})
-        per_query = s2_cfg.get("max_results_per_query", 5)
+        target_per_query = cfg.get("agent", {}).get("papers_per_query", 5)
+        gs_per_query = gs_cfg.get("max_results_per_query", target_per_query)
+        s2_per_query = s2_cfg.get("max_results_per_query", target_per_query)
 
-        for q in academic_queries:
-            logger.info("[Semantic Scholar] Searching: %s (max %d)", q, per_query)
-            try:
-                results = search_semantic_scholar(q, max_results=per_query)
-                for r in results:
-                    if r.uid not in existing_uids:
-                        new_papers.append({
-                            "uid": r.uid,
-                            "title": r.title,
-                            "authors": r.authors,
-                            "year": r.year,
-                            "abstract": r.snippet,
-                            "pdf_path": None,
-                            "pdf_url": r.pdf_url,
-                            "url": r.url,
-                            "source": "semantic_scholar",
-                        })
-                        existing_uids.add(r.uid)
-            except Exception as e:
-                logger.error("[Semantic Scholar] Failed for '%s': %s", q, e)
+        for q in effective_academic_queries:
+            merged_results = []
 
-    # ── Web (DuckDuckGo) ─────────────────────────────────────────────
+            if _source_enabled(cfg, "google_scholar"):
+                logger.info("[Google Scholar] Searching: %s (max %d)", q, gs_per_query)
+                try:
+                    merged_results.extend(search_google_scholar(q, max_results=gs_per_query))
+                except Exception as e:
+                    logger.error("[Google Scholar] Failed for '%s': %s", q, e)
+
+            need_more = max(0, target_per_query - len(dedup_results(merged_results)))
+            if _source_enabled(cfg, "semantic_scholar") and (need_more > 0 or not merged_results):
+                s2_max = max(s2_per_query, need_more)
+                logger.info("[Semantic Scholar] Searching: %s (max %d)", q, s2_max)
+                try:
+                    merged_results.extend(search_semantic_scholar(q, max_results=s2_max))
+                except Exception as e:
+                    logger.error("[Semantic Scholar] Failed for '%s': %s", q, e)
+
+            final_results = dedup_results(merged_results)[:max(target_per_query, gs_per_query, s2_per_query)]
+            for r in final_results:
+                rel_text = f"{r.title} {r.snippet}"
+                if not _is_topic_relevant(
+                    text=rel_text,
+                    topic_keywords=topic_keywords,
+                    block_terms=block_terms,
+                    min_hits=min_hits,
+                ):
+                    logger.debug("[TopicFilter] Drop paper candidate: %s", r.title)
+                    continue
+                if r.uid not in existing_uids:
+                    new_papers.append({
+                        "uid": r.uid,
+                        "title": r.title,
+                        "authors": r.authors,
+                        "year": r.year,
+                        "abstract": r.snippet,
+                        "pdf_path": None,
+                        "pdf_url": r.pdf_url,
+                        "url": r.url,
+                        "source": r.source,
+                    })
+                    existing_uids.add(r.uid)
+
+    # ── Web: Google first, DuckDuckGo fallback; English-first sorting ──
     if _source_enabled(cfg, "web"):
-        from src.ingest.web_fetcher import scrape_results, search_duckduckgo
+        from src.ingest.web_fetcher import (
+            dedup_results,
+            filter_results_by_domain,
+            prioritize_results,
+            scrape_results,
+            search_duckduckgo,
+            search_google,
+        )
 
         web_cfg = sources_cfg.get("web", {})
         per_query = web_cfg.get("max_results_per_query", 8)
+        overfetch = int(web_cfg.get("overfetch_factor", 3))
         do_scrape = web_cfg.get("scrape_pages", True)
         scrape_max = web_cfg.get("scrape_max_chars", 30000)
         web_delay = web_cfg.get("polite_delay_sec", 0.5)
+        prefer_google = web_cfg.get("prefer_google", True)
+        ddg_region = web_cfg.get("ddg_region", "us-en")
+        google_hl = web_cfg.get("google_hl", "en")
+        google_gl = web_cfg.get("google_gl", "us")
+        prefer_english = web_cfg.get("prefer_english", True)
+        max_zh_ratio = float(web_cfg.get("max_chinese_ratio", 0.25))
+        blocked_domains = web_cfg.get("blocked_domains", [])
 
-        for q in web_queries:
+        for q in effective_web_queries:
             logger.info("[Web] Searching: %s (max %d)", q, per_query)
             try:
-                results = search_duckduckgo(q, max_results=per_query)
+                merged = []
+                raw_n = max(per_query * max(1, overfetch), per_query)
+
+                if prefer_google:
+                    merged.extend(search_google(q, max_results=raw_n, hl=google_hl, gl=google_gl))
+                if len(merged) < per_query:
+                    merged.extend(search_duckduckgo(q, max_results=raw_n, region=ddg_region))
+
+                results = dedup_results(merged)
+                results = filter_results_by_domain(results, blocked_domains=blocked_domains)
+                results = prioritize_results(
+                    results,
+                    max_results=per_query,
+                    prefer_english=prefer_english,
+                    max_chinese_ratio=max_zh_ratio,
+                )
+                results = [
+                    r for r in results
+                    if _is_topic_relevant(
+                        text=f"{r.title} {r.snippet}",
+                        topic_keywords=topic_keywords,
+                        block_terms=block_terms,
+                        min_hits=min_hits,
+                    )
+                ]
                 if do_scrape:
                     results = scrape_results(
                         results,
@@ -237,7 +1018,7 @@ def fetch_sources(state: ResearchState) -> Dict[str, Any]:
                             "url": r.url,
                             "snippet": r.snippet,
                             "body": r.body,
-                            "source": "web",
+                            "source": r.source,
                         })
                         existing_web_uids.add(r.uid)
             except Exception as e:
@@ -248,8 +1029,8 @@ def fetch_sources(state: ResearchState) -> Dict[str, Any]:
         "papers": new_papers,
         "web_sources": new_web,
         "status": (
-            f"Fetched {len(new_papers)} papers (arXiv + S2) "
-            f"and {len(new_web)} web sources"
+            f"Fetched {len(new_papers)} papers (arXiv/Scholar/S2) and {len(new_web)} web sources "
+            f"[routes: {len(effective_academic_queries)} academic, {len(effective_web_queries)} web]"
         ),
     }
 
@@ -263,20 +1044,37 @@ def index_sources(state: ResearchState) -> Dict[str, Any]:
     Papers go into ``collection_name`` (default "papers") and web pages
     go into ``web_collection_name`` (default "web_sources") so that
     paper-analysis RAG retrieval never pulls in unrelated web chunks.
+
+    When a ``run_id`` is present (agent mode) documents are stored once
+    globally (cross-run dedup) and each run's accessible doc_uids are
+    recorded in the ``run_docs`` SQLite table.
     """
     from src.ingest.chunking import chunk_text
+    from src.ingest.fetchers import init_run_tables, upsert_run_docs, upsert_run_session
     from src.ingest.indexer import build_chroma_index
     from src.workflows.traditional_rag import index_pdfs
 
     cfg = _get_cfg(state)
     root = Path(cfg.get("_root", "."))
+    run_id = cfg.get("_run_id", "")
     persist_dir = str(
         (root / cfg.get("index", {}).get("persist_dir", "data/indexes/chroma")).resolve()
+    )
+    sqlite_path = str(
+        (root / cfg.get("metadata_store", {}).get("sqlite_path", "data/metadata/papers.sqlite")).resolve()
     )
     paper_collection = cfg.get("index", {}).get("collection_name", "papers")
     web_collection = cfg.get("index", {}).get("web_collection_name", "web_sources")
     chunk_size = cfg.get("index", {}).get("chunk_size", 1200)
     overlap = cfg.get("index", {}).get("overlap", 200)
+
+    # Ensure run tracking tables exist and record this run (idempotent)
+    if run_id:
+        try:
+            init_run_tables(sqlite_path)
+            upsert_run_session(sqlite_path, run_id=run_id, topic=state.get("topic", ""))
+        except Exception as e:
+            logger.warning("run_session upsert failed: %s", e)
 
     new_paper_ids: List[str] = []
     new_web_ids: List[str] = []
@@ -299,10 +1097,19 @@ def index_sources(state: ResearchState) -> Dict[str, Any]:
                 pdfs=pdf_paths,
                 chunk_size=chunk_size,
                 overlap=overlap,
+                run_id=run_id,
             )
             new_paper_ids = result.get("indexed_docs", [])
         except Exception as e:
             logger.error("PDF indexing failed: %s", e)
+
+    # Record all submitted paper doc_ids for this run (including cross-run reuses)
+    all_submitted_paper_ids = [Path(p["pdf_path"]).stem for p in to_index]
+    if run_id and all_submitted_paper_ids:
+        try:
+            upsert_run_docs(sqlite_path, run_id=run_id, doc_uids=all_submitted_paper_ids, doc_type="paper")
+        except Exception as e:
+            logger.warning("run_docs upsert (papers) failed: %s", e)
 
     # ── Index web content → web_collection ───────────────────────────
     already_web = set(state.get("indexed_web_ids", []))
@@ -326,10 +1133,18 @@ def index_sources(state: ResearchState) -> Dict[str, Any]:
                 collection_name=web_collection,
                 chunks=chunks,
                 doc_id=doc_id,
+                run_id=run_id,
             )
             new_web_ids.append(doc_id)
         except Exception as e:
             logger.error("Web indexing failed for %s: %s", doc_id, e)
+
+    # Record web doc_ids for this run
+    if run_id and new_web_ids:
+        try:
+            upsert_run_docs(sqlite_path, run_id=run_id, doc_uids=new_web_ids, doc_type="web")
+        except Exception as e:
+            logger.warning("run_docs upsert (web) failed: %s", e)
 
     return {
         "indexed_paper_ids": new_paper_ids,
@@ -356,6 +1171,8 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
     )
     paper_collection = cfg.get("index", {}).get("collection_name", "papers")
     top_k = cfg.get("agent", {}).get("top_k_for_analysis", 8)
+    candidate_k = cfg.get("retrieval", {}).get("candidate_k")
+    reranker_model = cfg.get("retrieval", {}).get("reranker_model") or None
 
     topic = state["topic"]
     already_analyzed = {a["uid"] for a in state.get("analyses", [])}
@@ -374,16 +1191,20 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
     for paper in papers_to_analyze:
         logger.info("[Paper] Analyzing: %s", paper["title"])
 
-        # Try RAG retrieval for indexed papers
+        # Try RAG retrieval for indexed papers — restrict to this run's doc_ids
         chunks_text = ""
         if paper.get("pdf_path"):
             try:
                 from src.rag.retriever import retrieve
+                run_paper_ids = state.get("indexed_paper_ids") or None
                 hits = retrieve(
                     persist_dir=persist_dir,
                     collection_name=paper_collection,
                     query=f"{topic} {paper['title']}",
                     top_k=top_k,
+                    candidate_k=candidate_k,
+                    reranker_model=reranker_model,
+                    allowed_doc_ids=run_paper_ids,
                 )
                 chunks_text = "\n\n---\n\n".join(
                     f"[Chunk {i+1}] {h['text']}" for i, h in enumerate(hits)
@@ -394,6 +1215,9 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
         # Fall back to abstract if no chunks
         if not chunks_text:
             chunks_text = paper.get("abstract", "(no content available)")
+        table_signals = _extract_table_signals(chunks_text or paper.get("abstract", ""))
+        if table_signals:
+            chunks_text += "\n\nPotential table-like evidence:\n" + "\n".join(f"- {t}" for t in table_signals)
 
         prompt = ANALYZE_PAPER_USER.format(
             topic=topic,
@@ -422,6 +1246,7 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
         analysis["source"] = paper.get("source", "arxiv")
         if paper.get("url"):
             analysis["url"] = paper["url"]
+        analysis["source_tier"] = _source_tier(analysis)
         new_analyses.append(analysis)
 
         for f in analysis.get("key_findings", []):
@@ -442,6 +1267,9 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
         # Truncate very long content to fit LLM context
         if len(content) > 15000:
             content = content[:15000] + "\n\n[... content truncated ...]"
+        table_signals = _extract_table_signals(content)
+        if table_signals:
+            content += "\n\nPotential table-like evidence:\n" + "\n".join(f"- {t}" for t in table_signals)
 
         prompt = ANALYZE_WEB_USER.format(
             topic=topic,
@@ -468,6 +1296,7 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
         analysis["title"] = web["title"]
         analysis["url"] = web.get("url", "")
         analysis["source"] = "web"
+        analysis["source_tier"] = _source_tier(analysis)
         new_analyses.append(analysis)
 
         for f in analysis.get("key_findings", []):
@@ -490,18 +1319,32 @@ def synthesize(state: ResearchState) -> Dict[str, Any]:
     cfg = _get_cfg(state)
     model = cfg.get("llm", {}).get("model", "gpt-4.1-mini")
     temperature = cfg.get("llm", {}).get("temperature", 0.3)
+    scope, budget = _load_budget_and_scope(state, cfg)
+    source_rank_cfg = cfg.get("agent", {}).get("source_ranking", {})
+    core_min_a_ratio = float(source_rank_cfg.get("core_min_a_ratio", 0.7))
+    max_refs = min(
+        int(cfg.get("agent", {}).get("report_max_sources", 40)),
+        int(budget.get("max_references", 20)),
+    )
 
     topic = state["topic"]
     questions = "\n".join(f"- {q}" for q in state.get("research_questions", []))
 
+    traceable_analyses = [a for a in state.get("analyses", []) if _has_traceable_source(a)]
+    if not traceable_analyses:
+        traceable_analyses = state.get("analyses", [])
+    traceable_analyses = _dedupe_and_rank_analyses(traceable_analyses, max_refs * 2)
+
     analyses_parts = []
-    for a in state.get("analyses", []):
+    for a in traceable_analyses:
         source_tag = a.get("source", "unknown")
+        tier = a.get("source_tier") or _source_tier(a)
         header = f"### [{source_tag.upper()}] {a.get('title', 'Unknown')}"
         if a.get("url"):
             header += f"\nURL: {a['url']}"
         analyses_parts.append(
             f"{header}\n"
+            f"Tier: {tier}\n"
             f"Summary: {a.get('summary', 'N/A')}\n"
             f"Key findings: {', '.join(a.get('key_findings', []))}\n"
             f"Methodology: {a.get('methodology', 'N/A')}\n"
@@ -513,7 +1356,13 @@ def synthesize(state: ResearchState) -> Dict[str, Any]:
     prompt = SYNTHESIZE_USER.format(
         topic=topic,
         questions=questions,
-        analyses=analyses_text,
+        analyses=(
+            analyses_text
+            + "\n\nScope and budget constraints:\n"
+            + f"- Intent: {scope.get('intent')}\n"
+            + f"- Allowed sections: {', '.join(scope.get('allowed_sections', []))}\n"
+            + f"- References budget: <= {max_refs}\n"
+        ),
     )
 
     raw = _llm_call(SYNTHESIZE_SYSTEM, prompt, model=model, temperature=temperature)
@@ -526,9 +1375,28 @@ def synthesize(state: ResearchState) -> Dict[str, Any]:
             "gaps": [],
         }
 
+    claim_map = _build_claim_evidence_map(
+        research_questions=state.get("research_questions", []),
+        analyses=traceable_analyses,
+        core_min_a_ratio=core_min_a_ratio,
+    )
+    evidence_audit_log = _build_evidence_audit_log(
+        research_questions=state.get("research_questions", []),
+        claim_map=claim_map,
+        core_min_a_ratio=core_min_a_ratio,
+    )
+    audit_gaps = [
+        f"{item.get('research_question')}: {', '.join(item.get('gaps', []))}"
+        for item in evidence_audit_log
+        if item.get("gaps")
+    ]
+    merged_gaps = list(dict.fromkeys(result.get("gaps", []) + audit_gaps))
+
     return {
         "synthesis": result.get("synthesis", raw),
-        "gaps": result.get("gaps", []),
+        "claim_evidence_map": claim_map,
+        "evidence_audit_log": evidence_audit_log,
+        "gaps": merged_gaps,
         "status": "Synthesis complete",
     }
 
@@ -540,6 +1408,7 @@ def evaluate_progress(state: ResearchState) -> Dict[str, Any]:
     """Decide whether to continue researching or generate final report."""
     cfg = _get_cfg(state)
     model = cfg.get("llm", {}).get("model", "gpt-4.1-mini")
+    temperature = cfg.get("llm", {}).get("temperature", 0.1)
     iteration = state.get("iteration", 0)
     max_iter = state.get("max_iterations", 3)
 
@@ -573,14 +1442,21 @@ def evaluate_progress(state: ResearchState) -> Dict[str, Any]:
         gaps="\n".join(f"- {g}" for g in state.get("gaps", [])) or "(none identified)",
     )
 
-    raw = _llm_call(EVALUATE_SYSTEM, prompt, model=model, temperature=0.1)
+    raw = _llm_call(EVALUATE_SYSTEM, prompt, model=model, temperature=temperature)
 
     try:
         result = _parse_json(raw)
     except json.JSONDecodeError:
         result = {"should_continue": False, "gaps": []}
 
-    should_continue = result.get("should_continue", False)
+    should_continue = bool(result.get("should_continue", False))
+    evidence_audit_log = state.get("evidence_audit_log", [])
+    unresolved_audit = [x for x in evidence_audit_log if x.get("gaps")]
+    if unresolved_audit and iteration + 1 < max_iter:
+        should_continue = True
+        result["gaps"] = list(dict.fromkeys(result.get("gaps", []) + [
+            f"Evidence gap in RQ: {x.get('research_question')}" for x in unresolved_audit
+        ]))
 
     return {
         "should_continue": should_continue,
@@ -599,17 +1475,97 @@ def generate_report(state: ResearchState) -> Dict[str, Any]:
     model = cfg.get("llm", {}).get("model", "gpt-4.1-mini")
     temperature = cfg.get("llm", {}).get("temperature", 0.3)
     language = cfg.get("agent", {}).get("language", "en")
+    scope, budget = _load_budget_and_scope(state, cfg)
+    max_report_sources = min(
+        int(cfg.get("agent", {}).get("report_max_sources", 40)),
+        int(budget.get("max_references", 20)),
+    )
+    source_rank_cfg = cfg.get("agent", {}).get("source_ranking", {})
+    core_min_a_ratio = float(source_rank_cfg.get("core_min_a_ratio", 0.7))
+    background_max_c = int(source_rank_cfg.get("background_max_c", 3))
+    topic_filter_cfg = cfg.get("agent", {}).get("topic_filter", {})
+    block_terms = topic_filter_cfg.get("block_terms", _DEFAULT_TOPIC_BLOCK_TERMS)
 
     topic = state["topic"]
     questions = "\n".join(f"- {q}" for q in state.get("research_questions", []))
 
+    # Citation gate + dedupe.
+    traceable_analyses = [a for a in state.get("analyses", []) if _has_traceable_source(a)]
+    if not traceable_analyses:
+        traceable_analyses = state.get("analyses", [])
+    traceable_analyses = _dedupe_and_rank_analyses(traceable_analyses, max_report_sources * 3)
+    for a in traceable_analyses:
+        a["source_tier"] = a.get("source_tier") or _source_tier(a)
+
+    claim_map = state.get("claim_evidence_map", [])
+    if not claim_map:
+        claim_map = _build_claim_evidence_map(
+            research_questions=state.get("research_questions", []),
+            analyses=traceable_analyses,
+            core_min_a_ratio=core_min_a_ratio,
+        )
+
+    # Build source pools with quotas:
+    # - core conclusions rely on A/B only
+    # - C-tier only background and capped
+    core_keys = set()
+    for c in claim_map:
+        for e in c.get("evidence", []):
+            k_uid = str(e.get("uid") or "").strip().lower()
+            k_url = _normalize_source_url(str(e.get("url") or ""))
+            if k_uid:
+                core_keys.add(f"uid:{k_uid}")
+            elif k_url:
+                core_keys.add(f"url:{k_url}")
+
+    selected: List[Dict[str, Any]] = []
+    seen = set()
+
+    def _push(a: Dict[str, Any]) -> None:
+        k = _source_dedupe_key(a)
+        if k in seen:
+            return
+        seen.add(k)
+        selected.append(a)
+
+    # 1) Core sources first, A/B only.
+    for a in traceable_analyses:
+        k = _source_dedupe_key(a)
+        if k in core_keys and a.get("source_tier") in {"A", "B"}:
+            _push(a)
+
+    # 2) Fill remaining with A then B.
+    core_cap = max(1, max_report_sources - max(0, background_max_c))
+    for tier in ("A", "B"):
+        for a in traceable_analyses:
+            if len(selected) >= core_cap:
+                break
+            if a.get("source_tier") == tier:
+                _push(a)
+
+    # 3) Add limited C-tier for background only.
+    c_added = 0
+    for a in traceable_analyses:
+        if len(selected) >= max_report_sources:
+            break
+        if a.get("source_tier") == "C" and c_added < max(0, background_max_c):
+            _push(a)
+            c_added += 1
+
+    selected = selected[:max_report_sources]
+    claim_map_text = _format_claim_map(claim_map)
+
     # Build analyses text with source type labels
     analyses_parts = []
-    for a in state.get("analyses", []):
+    allowed_refs: List[str] = []
+    for a in selected:
         source_tag = a.get("source", "unknown")
         part = f"### [{source_tag.upper()}] {a.get('title', 'Unknown')}\n"
-        if a.get("url"):
-            part += f"URL: {a['url']}\n"
+        final_url = str(a.get("url") or "").strip() or _uid_to_resolvable_url(str(a.get("uid") or ""))
+        if final_url:
+            part += f"URL: {final_url}\n"
+            allowed_refs.append(f"- [{a.get('title', 'Unknown')}]({final_url})")
+        part += f"Tier: {a.get('source_tier', 'C')}\n"
         authors = a.get("authors", [])
         if isinstance(authors, list) and authors:
             part += f"Authors: {', '.join(authors)}\n"
@@ -632,13 +1588,79 @@ def generate_report(state: ResearchState) -> Dict[str, Any]:
         questions=questions,
         analyses=analyses_text,
         synthesis=synthesis,
+    ) + (
+        "\n\nRequirements:\n"
+        f"- Scope intent: {scope.get('intent')}.\n"
+        f"- Allowed core sections: {', '.join(scope.get('allowed_sections', []))}.\n"
+        f"- Core sections budget <= {int(budget.get('max_sections', 5))}.\n"
+        f"- Use at most {max_report_sources} references.\n"
+        "- Only cite sources that appear in the provided Source analyses cards.\n"
+        "- Every reference entry must include a resolvable URL (http/https) or arXiv/DOI identifier.\n"
+        "- Build Key Findings from the Claim-Evidence Map below.\n"
+        f"- For core conclusions, use only tier A/B evidence (A target ratio >= {core_min_a_ratio}).\n"
+        f"- Tier C sources are background-only and capped at {background_max_c}.\n"
+        "- Do not repeat references; each source appears once in References.\n"
+        "- Do not invent references or placeholders.\n"
+        "\nClaim-Evidence Map:\n"
+        + claim_map_text
+        + "\nAllowed References (deduplicated):\n"
+        + ("\n".join(allowed_refs) if allowed_refs else "- (none)")
     )
 
     system = REPORT_SYSTEM_ZH if language == "zh" else REPORT_SYSTEM
 
     report = _llm_call(system, prompt, model=model, temperature=temperature)
+    report = _clean_reference_section(report, max_refs=max_report_sources)
+
+    critic = _critic_report(
+        topic=topic,
+        report=report,
+        research_questions=state.get("research_questions", []),
+        claim_map=claim_map,
+        max_refs=max_report_sources,
+        max_sections=int(budget.get("max_sections", 5)),
+        block_terms=block_terms,
+    )
+    repair_attempted = bool(state.get("repair_attempted", False))
+    if not critic.get("pass", False) and not repair_attempted:
+        report = _repair_report_once(
+            report=report,
+            issues=critic.get("issues", []),
+            topic=topic,
+            research_questions=state.get("research_questions", []),
+            claim_map_text=claim_map_text,
+            allowed_refs=allowed_refs,
+            max_refs=max_report_sources,
+            model=model,
+            temperature=temperature,
+        )
+        report = _clean_reference_section(report, max_refs=max_report_sources)
+        critic = _critic_report(
+            topic=topic,
+            report=report,
+            research_questions=state.get("research_questions", []),
+            claim_map=claim_map,
+            max_refs=max_report_sources,
+            max_sections=int(budget.get("max_sections", 5)),
+            block_terms=block_terms,
+        )
+        repair_attempted = True
+
+    compiled = f"*Report compiled {datetime.now().strftime('%B %Y')}*"
+    if re.search(r"\*Report compiled .*?\*", report):
+        report = re.sub(r"\*Report compiled .*?\*", compiled, report)
+    else:
+        report = report.rstrip() + "\n\n---\n\n" + compiled + "\n"
+
+    acceptance_metrics = _compute_acceptance_metrics(
+        evidence_audit_log=state.get("evidence_audit_log", []),
+        report_critic=critic,
+    )
 
     return {
         "report": report,
+        "report_critic": critic,
+        "repair_attempted": repair_attempted,
+        "acceptance_metrics": acceptance_metrics,
         "status": "Research report generated",
     }

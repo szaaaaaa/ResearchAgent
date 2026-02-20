@@ -41,6 +41,10 @@ class ResearchState(TypedDict, total=False):
     # ── Planning ─────────────────────────────────────────────────────
     research_questions: List[str]   # sub-questions decomposed from topic
     search_queries: List[str]       # search queries to execute
+    scope: Dict[str, Any]           # intent + allowed sections
+    budget: Dict[str, int]          # rq/section/reference budgets
+    query_routes: Dict[str, Dict[str, Any]]  # dynamic retrieval routing
+    memory_summary: str             # compressed iterative memory context
 
     # ── Data collection (papers: arXiv + Semantic Scholar) ───────────
     papers: Annotated[List[Dict[str, Any]], operator.add]   # accumulated paper records
@@ -54,6 +58,8 @@ class ResearchState(TypedDict, total=False):
     analyses: Annotated[List[Dict[str, Any]], operator.add] # per-source analysis dicts
     findings: Annotated[List[str], operator.add]            # key findings so far
     gaps: List[str]                                         # identified knowledge gaps
+    claim_evidence_map: List[Dict[str, Any]]                # claim->evidence bindings
+    evidence_audit_log: List[Dict[str, Any]]                # per-RQ evidence coverage
 
     # ── Synthesis & output ───────────────────────────────────────────
     synthesis: str                  # intermediate synthesis text
@@ -65,3 +71,9 @@ class ResearchState(TypedDict, total=False):
     should_continue: bool           # set by evaluate_progress node
     status: str                     # human-readable status message
     error: Optional[str]            # last error message, if any
+    report_critic: Dict[str, Any]   # report quality checks and issues
+    repair_attempted: bool          # one-shot report repair flag
+
+    # ── Run identity & acceptance metrics ────────────────────────────
+    run_id: str                         # uuid for this run (cross-run isolation key)
+    acceptance_metrics: Dict[str, Any]  # quantitative QA scores computed at report time

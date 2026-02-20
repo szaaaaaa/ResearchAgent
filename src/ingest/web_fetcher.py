@@ -1,14 +1,17 @@
-"""Multi-source web fetcher: DuckDuckGo search, page scraping, Semantic Scholar.
-
-All functions are designed to work without extra API keys (unlike Tavily/Serper).
-"""
 from __future__ import annotations
 
+"""Multi-source web fetcher: Google/Scholar (optional), DuckDuckGo, Semantic Scholar.
+
+Google and Google Scholar are supported via SerpAPI when `SERPAPI_API_KEY`
+is available. Otherwise the pipeline falls back to free sources.
+"""
+
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Iterable, List, Optional
 from urllib.parse import urlparse
 
 import requests
@@ -22,29 +25,208 @@ _HEADERS = {
     ),
 }
 
+_SERPAPI_URL = "https://serpapi.com/search.json"
+_S2_SEARCH = "https://api.semanticscholar.org/graph/v1/paper/search"
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_LIKELY_CN_DOMAINS = {
+    "zhihu.com",
+    "zhidao.baidu.com",
+    "baike.baidu.com",
+    "tieba.baidu.com",
+    "weibo.com",
+    "bilibili.com",
+    "csdn.net",
+    "juejin.cn",
+}
 
-# ── Data containers ──────────────────────────────────────────────────
 
 @dataclass
 class WebResult:
-    """A single result returned by a web search engine."""
+    """A single result returned by a search source."""
+
     uid: str
     title: str
     url: str
     snippet: str
-    source: str            # "web", "semantic_scholar", "arxiv"
-    body: str = ""         # full extracted text (filled by scrape step)
+    source: str  # "web", "google", "semantic_scholar", "google_scholar"
+    body: str = ""  # full extracted text (filled by scrape step)
     authors: List[str] = field(default_factory=list)
     year: Optional[int] = None
     pdf_url: Optional[str] = None
     pdf_path: Optional[str] = None
 
 
-# ── DuckDuckGo search ────────────────────────────────────────────────
+def _contains_cjk(text: str) -> bool:
+    return bool(_CJK_RE.search(text or ""))
+
+
+def _is_chinese_result(r: WebResult) -> bool:
+    host = urlparse(r.url or "").netloc.lower()
+    if host.endswith(".cn") or any(host.endswith(x) for x in _LIKELY_CN_DOMAINS):
+        return True
+    return _contains_cjk(f"{r.title} {r.snippet}")
+
+
+def _url_to_uid(url: str) -> str:
+    """Convert a URL to a filesystem-safe UID fragment."""
+    parsed = urlparse(url)
+    host = parsed.netloc.replace("www.", "")
+    path = parsed.path.strip("/").replace("/", "_")
+    raw = f"{host}_{path}" if path else host
+    return re.sub(r"[^a-zA-Z0-9._-]", "_", raw)[:120]
+
+
+def dedup_results(*result_lists: List[WebResult]) -> List[WebResult]:
+    """Merge multiple result lists, deduplicating by uid."""
+    seen: dict[str, WebResult] = {}
+    for lst in result_lists:
+        for r in lst:
+            if r.uid not in seen:
+                seen[r.uid] = r
+    return list(seen.values())
+
+
+def filter_results_by_domain(
+    results: List[WebResult],
+    *,
+    blocked_domains: Iterable[str] | None = None,
+) -> List[WebResult]:
+    blocked = {d.strip().lower() for d in (blocked_domains or []) if d and d.strip()}
+    if not blocked:
+        return results
+
+    out: List[WebResult] = []
+    for r in results:
+        host = urlparse(r.url or "").netloc.lower()
+        if any(host == d or host.endswith(f".{d}") for d in blocked):
+            continue
+        out.append(r)
+    return out
+
+
+def prioritize_results(
+    results: List[WebResult],
+    *,
+    max_results: int,
+    prefer_english: bool = True,
+    max_chinese_ratio: float = 0.25,
+) -> List[WebResult]:
+    """Prefer English/global sources first, then Chinese sources."""
+    uniq = dedup_results(results)
+    if not prefer_english:
+        return uniq[:max_results]
+
+    en_like: List[WebResult] = []
+    zh_like: List[WebResult] = []
+    for r in uniq:
+        if _is_chinese_result(r):
+            zh_like.append(r)
+        else:
+            en_like.append(r)
+
+    zh_cap = max(0, int(max_results * max(0.0, min(max_chinese_ratio, 1.0))))
+
+    out: List[WebResult] = en_like[:max_results]
+    if len(out) < max_results:
+        out.extend(zh_like[: max_results - len(out)])
+    elif zh_cap > 0:
+        keep_en = max_results - zh_cap
+        out = en_like[:keep_en] + zh_like[:zh_cap]
+    return out[:max_results]
+
+
+def _search_serpapi(
+    query: str,
+    *,
+    engine: str,
+    max_results: int = 10,
+    hl: str = "en",
+    gl: str = "us",
+) -> List[dict]:
+    key = os.getenv("SERPAPI_API_KEY", "").strip()
+    if not key:
+        return []
+    try:
+        resp = requests.get(
+            _SERPAPI_URL,
+            params={
+                "api_key": key,
+                "engine": engine,
+                "q": query,
+                "num": min(max_results, 20),
+                "hl": hl,
+                "gl": gl,
+            },
+            headers=_HEADERS,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return (resp.json() or {}).get("organic_results", []) or []
+    except Exception as e:
+        logger.error("SerpAPI search failed (engine=%s): %s", engine, e)
+        return []
+
+
+def search_google(
+    query: str,
+    max_results: int = 10,
+    *,
+    hl: str = "en",
+    gl: str = "us",
+) -> List[WebResult]:
+    """Search Google via SerpAPI when `SERPAPI_API_KEY` is set."""
+    rows = _search_serpapi(query, engine="google", max_results=max_results, hl=hl, gl=gl)
+    out: List[WebResult] = []
+    for i, row in enumerate(rows):
+        url = row.get("link", "")
+        uid = f"web:{_url_to_uid(url)}" if url else f"web:google_{i}"
+        out.append(
+            WebResult(
+                uid=uid,
+                title=row.get("title", ""),
+                url=url,
+                snippet=row.get("snippet", "") or "",
+                source="google",
+            )
+        )
+    return out
+
+
+def search_google_scholar(
+    query: str,
+    max_results: int = 10,
+) -> List[WebResult]:
+    """Search Google Scholar via SerpAPI when `SERPAPI_API_KEY` is set."""
+    rows = _search_serpapi(query, engine="google_scholar", max_results=max_results, hl="en", gl="us")
+    out: List[WebResult] = []
+    for i, row in enumerate(rows):
+        url = row.get("link", "") or row.get("resources", [{}])[0].get("link", "")
+        result_id = row.get("result_id", "")
+        uid = f"gs:{result_id}" if result_id else (f"web:{_url_to_uid(url)}" if url else f"gs:{i}")
+        pub_info = row.get("publication_info", {}) or {}
+        summary = pub_info.get("summary", "") or ""
+        authors = [a.get("name", "") for a in pub_info.get("authors", []) if a.get("name")]
+        year_match = re.search(r"(19|20)\d{2}", summary)
+        year = int(year_match.group(0)) if year_match else None
+        out.append(
+            WebResult(
+                uid=uid,
+                title=row.get("title", ""),
+                url=url,
+                snippet=row.get("snippet", "") or summary,
+                source="google_scholar",
+                authors=authors,
+                year=year,
+            )
+        )
+    return out
+
 
 def search_duckduckgo(
     query: str,
     max_results: int = 10,
+    *,
+    region: str = "us-en",
 ) -> List[WebResult]:
     """Search the web via DuckDuckGo (no API key needed)."""
     try:
@@ -59,7 +241,7 @@ def search_duckduckgo(
     results: List[WebResult] = []
     try:
         with DDGS() as ddgs:
-            hits = list(ddgs.text(query, max_results=max_results))
+            hits = list(ddgs.text(query, region=region, max_results=max_results))
         for i, h in enumerate(hits):
             url = h.get("href", h.get("link", ""))
             uid = f"web:{_url_to_uid(url)}" if url else f"web:ddg_{i}"
@@ -76,10 +258,6 @@ def search_duckduckgo(
         logger.error("DuckDuckGo search failed: %s", e)
     return results
 
-
-# ── Semantic Scholar ─────────────────────────────────────────────────
-
-_S2_SEARCH = "https://api.semanticscholar.org/graph/v1/paper/search"
 
 def search_semantic_scholar(
     query: str,
@@ -117,10 +295,7 @@ def search_semantic_scholar(
         else:
             uid = f"s2:{paper_id}"
 
-        authors = [
-            a.get("name", "") for a in (paper.get("authors") or [])
-        ]
-
+        authors = [a.get("name", "") for a in (paper.get("authors") or [])]
         pdf_info = paper.get("openAccessPdf") or {}
         pdf_url = pdf_info.get("url")
 
@@ -139,16 +314,11 @@ def search_semantic_scholar(
     return results
 
 
-# ── Web page scraping ────────────────────────────────────────────────
-
 def fetch_page_content(
     url: str,
     timeout: int = 20,
 ) -> str:
-    """Extract main textual content from a web page.
-
-    Uses trafilatura if available, falls back to basic HTML stripping.
-    """
+    """Extract main textual content from a web page."""
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=timeout)
         resp.raise_for_status()
@@ -157,30 +327,27 @@ def fetch_page_content(
         logger.warning("Failed to fetch %s: %s", url, e)
         return ""
 
-    # Try trafilatura first (best quality)
     try:
         import trafilatura
+
         text = trafilatura.extract(html, include_links=False, include_tables=True)
         if text:
             return text.strip()
     except ImportError:
         pass
 
-    # Fallback: BeautifulSoup
     try:
         from bs4 import BeautifulSoup
+
         soup = BeautifulSoup(html, "html.parser")
-        # Remove script/style
         for tag in soup(["script", "style", "nav", "footer", "header"]):
             tag.decompose()
         text = soup.get_text(separator="\n", strip=True)
-        # Collapse blank lines
         text = re.sub(r"\n{3,}", "\n\n", text)
-        return text[:50000]  # cap to avoid huge pages
+        return text[:50000]
     except ImportError:
         pass
 
-    # Last resort: regex strip
     text = re.sub(r"<[^>]+>", " ", html)
     text = re.sub(r"\s+", " ", text).strip()
     return text[:50000]
@@ -196,7 +363,6 @@ def scrape_results(
     for r in results:
         if r.body or not r.url:
             continue
-        # Skip PDF URLs (these are handled by the PDF pipeline)
         if r.url.lower().endswith(".pdf"):
             continue
         logger.info("Scraping: %s", r.url)
@@ -204,27 +370,3 @@ def scrape_results(
         if polite_delay_sec > 0:
             time.sleep(polite_delay_sec)
     return results
-
-
-# ── Helpers ──────────────────────────────────────────────────────────
-
-def _url_to_uid(url: str) -> str:
-    """Convert a URL to a filesystem-safe UID fragment."""
-    parsed = urlparse(url)
-    host = parsed.netloc.replace("www.", "")
-    path = parsed.path.strip("/").replace("/", "_")
-    raw = f"{host}_{path}" if path else host
-    # keep only alnum, dash, underscore, dot
-    return re.sub(r"[^a-zA-Z0-9._-]", "_", raw)[:120]
-
-
-def dedup_results(
-    *result_lists: List[WebResult],
-) -> List[WebResult]:
-    """Merge multiple result lists, deduplicating by uid."""
-    seen: dict[str, WebResult] = {}
-    for lst in result_lists:
-        for r in lst:
-            if r.uid not in seen:
-                seen[r.uid] = r
-    return list(seen.values())

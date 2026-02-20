@@ -37,6 +37,7 @@ Graph topology
 from __future__ import annotations
 
 import logging
+import uuid
 from pathlib import Path
 from typing import Any, Dict
 
@@ -123,13 +124,21 @@ def run_research(
     root = Path(root).resolve()
     max_iterations = cfg.get("agent", {}).get("max_iterations", 3)
 
+    # Generate a unique run ID for cross-run isolation and tracking
+    run_id = str(uuid.uuid4())
+
     # Inject config and root into state so nodes can access them
     cfg["_root"] = str(root)
+    cfg["_run_id"] = run_id
 
     initial_state: ResearchState = {
         "topic": topic,
         "research_questions": [],
         "search_queries": [],
+        "scope": {},
+        "budget": {},
+        "query_routes": {},
+        "memory_summary": "",
         "papers": [],
         "indexed_paper_ids": [],
         "web_sources": [],
@@ -137,13 +146,19 @@ def run_research(
         "analyses": [],
         "findings": [],
         "gaps": [],
+        "claim_evidence_map": [],
+        "evidence_audit_log": [],
         "synthesis": "",
         "report": "",
+        "report_critic": {},
+        "repair_attempted": False,
         "iteration": 0,
         "max_iterations": max_iterations,
         "should_continue": False,
         "status": "Starting research",
         "error": None,
+        "run_id": run_id,
+        "acceptance_metrics": {},
         "_cfg": cfg,
     }
 

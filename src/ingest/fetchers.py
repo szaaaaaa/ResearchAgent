@@ -165,3 +165,65 @@ def fetch_arxiv_and_store(
     )
     upsert_papers(sqlite_path, recs)
     return recs
+
+
+# ── Run-level tracking tables ─────────────────────────────────────────
+
+def init_run_tables(sqlite_path: str) -> None:
+    """Create run_sessions and run_docs tables if they don't exist."""
+    Path(sqlite_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(sqlite_path)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS run_sessions (
+            run_id   TEXT PRIMARY KEY,
+            topic    TEXT,
+            created_at TEXT
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS run_docs (
+            run_id   TEXT NOT NULL,
+            doc_uid  TEXT NOT NULL,
+            doc_type TEXT NOT NULL,
+            PRIMARY KEY (run_id, doc_uid)
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def upsert_run_session(sqlite_path: str, *, run_id: str, topic: str) -> None:
+    """Record a new research run in run_sessions."""
+    conn = sqlite3.connect(sqlite_path)
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT OR REPLACE INTO run_sessions (run_id, topic, created_at) VALUES (?, ?, ?)",
+        (run_id, topic, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def upsert_run_docs(
+    sqlite_path: str,
+    *,
+    run_id: str,
+    doc_uids: List[str],
+    doc_type: str,
+) -> None:
+    """Record which doc_uids are accessible to a given run."""
+    if not doc_uids:
+        return
+    conn = sqlite3.connect(sqlite_path)
+    cur = conn.cursor()
+    cur.executemany(
+        "INSERT OR IGNORE INTO run_docs (run_id, doc_uid, doc_type) VALUES (?, ?, ?)",
+        [(run_id, uid, doc_type) for uid in doc_uids],
+    )
+    conn.commit()
+    conn.close()
