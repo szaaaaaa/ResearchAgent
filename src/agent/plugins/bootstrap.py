@@ -1,0 +1,30 @@
+from __future__ import annotations
+
+import logging
+
+_BOOTSTRAPPED = False
+logger = logging.getLogger(__name__)
+
+
+def ensure_plugins_registered() -> None:
+    global _BOOTSTRAPPED
+    if _BOOTSTRAPPED:
+        return
+
+    # Import side effects register built-in backends.
+    try:
+        from src.agent.plugins.llm import openai_chat  # noqa: F401
+    except Exception as exc:  # pragma: no cover - optional dependency path
+        logger.warning("Skipping built-in LLM plugin registration: %s", exc)
+
+    try:
+        from src.agent.plugins.search import default_search  # noqa: F401
+    except Exception as exc:  # pragma: no cover - optional dependency path
+        logger.warning("Skipping built-in search plugin registration: %s", exc)
+
+    try:
+        from src.agent.plugins.retrieval import default_retriever  # noqa: F401
+    except Exception as exc:  # pragma: no cover - optional dependency path
+        logger.warning("Skipping built-in retrieval plugin registration: %s", exc)
+
+    _BOOTSTRAPPED = True

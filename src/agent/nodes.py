@@ -13,6 +13,30 @@ from pathlib import Path
 from typing import Any, Dict, List
 from urllib.parse import urlparse
 
+from src.agent.core.config import (
+    DEFAULT_ANALYSIS_WEB_CONTENT_MAX_CHARS,
+    DEFAULT_BACKGROUND_MAX_C,
+    DEFAULT_CORE_MIN_A_RATIO,
+    DEFAULT_MAX_CONTEXT_CHARS,
+    DEFAULT_MAX_FINDINGS_FOR_CONTEXT,
+    DEFAULT_MAX_REFERENCES,
+    DEFAULT_MAX_RESEARCH_QUESTIONS,
+    DEFAULT_MAX_SECTIONS,
+    DEFAULT_MIN_KEYWORD_HITS,
+    DEFAULT_REPORT_MAX_SOURCES,
+    DEFAULT_SIMPLE_QUERY_TERMS,
+    DEFAULT_DEEP_QUERY_TERMS,
+    DEFAULT_TOPIC_BLOCK_TERMS,
+)
+from src.agent.core.schemas import ResearchState
+from src.agent.infra.indexing.chroma_indexing import (
+    build_web_index,
+    chunk_text,
+    index_pdf_documents,
+    init_run_tracking,
+    upsert_run_doc_records,
+    upsert_run_session_record,
+)
 from src.agent.prompts import (
     ANALYZE_PAPER_SYSTEM,
     ANALYZE_PAPER_USER,
@@ -29,18 +53,11 @@ from src.agent.prompts import (
     SYNTHESIZE_SYSTEM,
     SYNTHESIZE_USER,
 )
-from src.agent.state import ResearchState
+from src.agent.providers import call_llm, fetch_candidates, retrieve_chunks
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TOPIC_BLOCK_TERMS = [
-    "hanabi",
-    "quantum",
-    "software registries",
-    "route choice",
-    "value systems of agents",
-    "multi-agent deep reinforcement learning with communication",
-]
+_DEFAULT_TOPIC_BLOCK_TERMS = list(DEFAULT_TOPIC_BLOCK_TERMS)
 _STOPWORDS = {
     "the", "and", "for", "with", "from", "that", "this", "are", "can", "what", "how",
     "why", "when", "where", "which", "best", "across", "into", "using", "used", "than",
@@ -70,33 +87,27 @@ _ENGINEERING_DOMAINS = {
     "anthropic.com",
     "langchain.com",
 }
-_SIMPLE_QUERY_TERMS = {
-    "what is", "intro", "introduction", "guide", "tutorial", "vs", "difference",
-    "overview", "best practices", "compare", "comparison", "是什么", "区别", "对比", "入门",
-}
-_DEEP_QUERY_TERMS = {
-    "benchmark", "evaluation", "privacy", "governance", "architecture", "framework",
-    "algorithm", "ablation", "latency", "token", "memory", "theorem", "proof",
-}
+_SIMPLE_QUERY_TERMS = set(DEFAULT_SIMPLE_QUERY_TERMS)
+_DEEP_QUERY_TERMS = set(DEFAULT_DEEP_QUERY_TERMS)
 
-# ── Helpers ──────────────────────────────────────────────────────────
+# Helpers
 
 
 def _llm_call(
     system: str,
     user: str,
     *,
+    cfg: Dict[str, Any] | None = None,
     model: str = "gpt-4.1-mini",
     temperature: float = 0.3,
 ) -> str:
-    """Thin wrapper around OpenAI chat completions."""
-    from src.rag.answerer import answer_with_openai_chat
-
-    return answer_with_openai_chat(
-        prompt=user,
+    """Thin wrapper around provider-based LLM calls."""
+    return call_llm(
+        system_prompt=system,
+        user_prompt=user,
+        cfg=cfg or {},
         model=model,
         temperature=temperature,
-        system_prompt=system,
     )
 
 
@@ -164,9 +175,11 @@ def _load_budget_and_scope(state: ResearchState, cfg: Dict[str, Any]) -> tuple[D
     agent_cfg = cfg.get("agent", {})
     budget_cfg = agent_cfg.get("budget", {})
     budget = {
-        "max_research_questions": int(budget_cfg.get("max_research_questions", 3)),
-        "max_sections": int(budget_cfg.get("max_sections", 5)),
-        "max_references": int(budget_cfg.get("max_references", 20)),
+        "max_research_questions": int(
+            budget_cfg.get("max_research_questions", DEFAULT_MAX_RESEARCH_QUESTIONS)
+        ),
+        "max_sections": int(budget_cfg.get("max_sections", DEFAULT_MAX_SECTIONS)),
+        "max_references": int(budget_cfg.get("max_references", DEFAULT_MAX_REFERENCES)),
     }
     intent = _infer_intent(state.get("topic", ""))
     allowed = _default_sections_for_intent(intent)[: max(1, budget["max_sections"])]
@@ -212,15 +225,24 @@ def _compress_findings_for_context(
 
 
 def _is_simple_query(query: str) -> bool:
+    return _is_simple_query_with_cfg(query, {})
+
+
+def _is_simple_query_with_cfg(query: str, cfg: Dict[str, Any]) -> bool:
     q = (query or "").lower()
-    has_simple = any(term in q for term in _SIMPLE_QUERY_TERMS)
-    has_deep = any(term in q for term in _DEEP_QUERY_TERMS)
+    dyn_cfg = cfg.get("agent", {}).get("dynamic_retrieval", {})
+    simple_terms = dyn_cfg.get("simple_query_terms", _SIMPLE_QUERY_TERMS)
+    deep_terms = dyn_cfg.get("deep_query_terms", _DEEP_QUERY_TERMS)
+    simple_set = {str(x).strip().lower() for x in simple_terms if str(x).strip()}
+    deep_set = {str(x).strip().lower() for x in deep_terms if str(x).strip()}
+    has_simple = any(term in q for term in simple_set)
+    has_deep = any(term in q for term in deep_set)
     return has_simple and not has_deep
 
 
 def _route_query(query: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
     dyn_cfg = cfg.get("agent", {}).get("dynamic_retrieval", {})
-    simple = _is_simple_query(query)
+    simple = _is_simple_query_with_cfg(query, cfg)
     use_academic = (not simple) or bool(dyn_cfg.get("simple_query_academic", False))
     use_web = True
     download_pdf = use_academic and ((not simple) or bool(dyn_cfg.get("simple_query_pdf", False)))
@@ -475,7 +497,7 @@ def _critic_report(
                 continue
             if any(t in report_tokens for t in rq_tokens):
                 covered += 1
-        if covered < max(1, int(len(research_questions) * 0.7)):
+        if covered < max(1, int(len(research_questions) * DEFAULT_CORE_MIN_A_RATIO)):
             issues.append("research_question_coverage_low")
 
     # Check claim-evidence appearance in final text.
@@ -509,6 +531,7 @@ def _repair_report_once(
     claim_map_text: str,
     allowed_refs: List[str],
     max_refs: int,
+    cfg: Dict[str, Any],
     model: str,
     temperature: float,
 ) -> str:
@@ -530,7 +553,7 @@ def _repair_report_once(
         + "\n\nReturn a repaired Markdown report only."
     )
     try:
-        return _llm_call(repair_system, repair_user, model=model, temperature=temperature)
+        return _llm_call(repair_system, repair_user, cfg=cfg, model=model, temperature=temperature)
     except Exception:
         return report
 
@@ -576,7 +599,7 @@ def _compute_acceptance_metrics(
 
     return {
         "avg_a_evidence_ratio": round(avg_a_ratio, 3),
-        "a_ratio_pass": avg_a_ratio >= 0.70,
+        "a_ratio_pass": avg_a_ratio >= DEFAULT_CORE_MIN_A_RATIO,
         "rq_min2_evidence_rate": round(rq_coverage_rate, 3),
         "rq_coverage_pass": rq_coverage_rate >= 0.90,
         "reference_budget_compliant": ref_compliant,
@@ -729,7 +752,7 @@ def _clean_reference_section(report: str, max_refs: int) -> str:
     return "\n".join(head + [""] + renumbered) + "\n"
 
 
-# ── Node: plan_research ──────────────────────────────────────────────
+# Node: plan_research
 
 
 def plan_research(state: ResearchState) -> Dict[str, Any]:
@@ -747,8 +770,8 @@ def plan_research(state: ResearchState) -> Dict[str, Any]:
         mem_cfg = cfg.get("agent", {}).get("memory", {})
         prev_findings = _compress_findings_for_context(
             state.get("findings", []),
-            max_items=int(mem_cfg.get("max_findings_for_context", 20)),
-            max_chars=int(mem_cfg.get("max_context_chars", 3500)),
+            max_items=int(mem_cfg.get("max_findings_for_context", DEFAULT_MAX_FINDINGS_FOR_CONTEXT)),
+            max_chars=int(mem_cfg.get("max_context_chars", DEFAULT_MAX_CONTEXT_CHARS)),
         )
         prev_gaps = "\n".join(f"- {g}" for g in state.get("gaps", []))
         prev_queries = ", ".join(state.get("search_queries", []))
@@ -769,7 +792,7 @@ def plan_research(state: ResearchState) -> Dict[str, Any]:
         ),
     )
 
-    raw = _llm_call(PLAN_RESEARCH_SYSTEM, prompt, model=model, temperature=temperature)
+    raw = _llm_call(PLAN_RESEARCH_SYSTEM, prompt, cfg=cfg, model=model, temperature=temperature)
 
     try:
         result = _parse_json(raw)
@@ -811,15 +834,13 @@ def plan_research(state: ResearchState) -> Dict[str, Any]:
     }
 
 
-# ── Node: fetch_sources ─────────────────────────────────────────────
+# Node: fetch_sources
 
 
 def fetch_sources(state: ResearchState) -> Dict[str, Any]:
     """Fetch from all enabled sources: arXiv, Semantic Scholar, web."""
     cfg = _get_cfg(state)
     root = Path(cfg.get("_root", "."))
-    sources_cfg = cfg.get("sources", {})
-    delay = cfg.get("fetch", {}).get("polite_delay_sec", 1.0)
 
     academic_queries = state.get("_academic_queries", state.get("search_queries", []))
     web_queries = state.get("_web_queries", state.get("search_queries", []))
@@ -844,187 +865,51 @@ def fetch_sources(state: ResearchState) -> Dict[str, Any]:
     existing_web_uids = {w["uid"] for w in state.get("web_sources", [])}
     topic_keywords = _build_topic_keywords(state, cfg)
     topic_filter_cfg = cfg.get("agent", {}).get("topic_filter", {})
-    block_terms = topic_filter_cfg.get("block_terms", _DEFAULT_TOPIC_BLOCK_TERMS)
-    min_hits = int(topic_filter_cfg.get("min_keyword_hits", 1))
+    block_terms = topic_filter_cfg.get("block_terms", DEFAULT_TOPIC_BLOCK_TERMS)
+    min_hits = int(topic_filter_cfg.get("min_keyword_hits", DEFAULT_MIN_KEYWORD_HITS))
 
     new_papers: List[Dict[str, Any]] = []
     new_web: List[Dict[str, Any]] = []
+    provider_result = fetch_candidates(
+        cfg=cfg,
+        root=root,
+        academic_queries=effective_academic_queries,
+        web_queries=effective_web_queries,
+        query_routes=query_routes,
+    )
 
-    # ── arXiv ────────────────────────────────────────────────────────
-    if _source_enabled(cfg, "arxiv"):
-        from src.ingest.fetchers import fetch_arxiv_and_store
+    for paper in provider_result.get("papers", []):
+        rel_text = f"{paper.get('title', '')} {paper.get('abstract', '')}"
+        if not _is_topic_relevant(
+            text=rel_text,
+            topic_keywords=topic_keywords,
+            block_terms=block_terms,
+            min_hits=min_hits,
+        ):
+            logger.debug("[TopicFilter] Drop paper candidate: %s", paper.get("title", ""))
+            continue
+        uid = paper.get("uid")
+        if not uid or uid in existing_uids:
+            continue
+        new_papers.append(paper)
+        existing_uids.add(uid)
 
-        arxiv_cfg = sources_cfg.get("arxiv", {})
-        per_query = arxiv_cfg.get("max_results_per_query", cfg.get("agent", {}).get("papers_per_query", 5))
-        download = arxiv_cfg.get("download_pdf", True)
+    for web in provider_result.get("web_sources", []):
+        rel_text = f"{web.get('title', '')} {web.get('snippet', '')}"
+        if not _is_topic_relevant(
+            text=rel_text,
+            topic_keywords=topic_keywords,
+            block_terms=block_terms,
+            min_hits=min_hits,
+        ):
+            logger.debug("[TopicFilter] Drop web candidate: %s", web.get("title", ""))
+            continue
+        uid = web.get("uid")
+        if not uid or uid in existing_web_uids:
+            continue
+        new_web.append(web)
+        existing_web_uids.add(uid)
 
-        papers_dir = str((root / cfg.get("paths", {}).get("papers_dir", "data/papers")).resolve())
-        sqlite_path = str((root / cfg.get("metadata_store", {}).get("sqlite_path", "data/metadata/papers.sqlite")).resolve())
-
-        for q in effective_academic_queries:
-            logger.info("[arXiv] Searching: %s (max %d)", q, per_query)
-            try:
-                route = query_routes.get(q, {})
-                records = fetch_arxiv_and_store(
-                    query=q,
-                    sqlite_path=sqlite_path,
-                    papers_dir=papers_dir,
-                    max_results=per_query,
-                    download=bool(route.get("download_pdf", download)),
-                    polite_delay_sec=delay,
-                )
-                for r in records:
-                    rel_text = f"{r.title} {r.abstract}"
-                    if not _is_topic_relevant(
-                        text=rel_text,
-                        topic_keywords=topic_keywords,
-                        block_terms=block_terms,
-                        min_hits=min_hits,
-                    ):
-                        logger.debug("[TopicFilter] Drop arXiv paper: %s", r.title)
-                        continue
-                    if r.uid not in existing_uids:
-                        new_papers.append({
-                            "uid": r.uid,
-                            "title": r.title,
-                            "authors": r.authors,
-                            "year": r.year,
-                            "abstract": r.abstract,
-                            "pdf_path": r.pdf_path,
-                            "source": "arxiv",
-                        })
-                        existing_uids.add(r.uid)
-            except Exception as e:
-                logger.error("[arXiv] Failed for '%s': %s", q, e)
-
-    # ── Academic search: Google Scholar first, Semantic Scholar fallback ──
-    if _source_enabled(cfg, "google_scholar") or _source_enabled(cfg, "semantic_scholar"):
-        from src.ingest.web_fetcher import dedup_results, search_google_scholar, search_semantic_scholar
-
-        gs_cfg = sources_cfg.get("google_scholar", {})
-        s2_cfg = sources_cfg.get("semantic_scholar", {})
-        target_per_query = cfg.get("agent", {}).get("papers_per_query", 5)
-        gs_per_query = gs_cfg.get("max_results_per_query", target_per_query)
-        s2_per_query = s2_cfg.get("max_results_per_query", target_per_query)
-
-        for q in effective_academic_queries:
-            merged_results = []
-
-            if _source_enabled(cfg, "google_scholar"):
-                logger.info("[Google Scholar] Searching: %s (max %d)", q, gs_per_query)
-                try:
-                    merged_results.extend(search_google_scholar(q, max_results=gs_per_query))
-                except Exception as e:
-                    logger.error("[Google Scholar] Failed for '%s': %s", q, e)
-
-            need_more = max(0, target_per_query - len(dedup_results(merged_results)))
-            if _source_enabled(cfg, "semantic_scholar") and (need_more > 0 or not merged_results):
-                s2_max = max(s2_per_query, need_more)
-                logger.info("[Semantic Scholar] Searching: %s (max %d)", q, s2_max)
-                try:
-                    merged_results.extend(search_semantic_scholar(q, max_results=s2_max))
-                except Exception as e:
-                    logger.error("[Semantic Scholar] Failed for '%s': %s", q, e)
-
-            final_results = dedup_results(merged_results)[:max(target_per_query, gs_per_query, s2_per_query)]
-            for r in final_results:
-                rel_text = f"{r.title} {r.snippet}"
-                if not _is_topic_relevant(
-                    text=rel_text,
-                    topic_keywords=topic_keywords,
-                    block_terms=block_terms,
-                    min_hits=min_hits,
-                ):
-                    logger.debug("[TopicFilter] Drop paper candidate: %s", r.title)
-                    continue
-                if r.uid not in existing_uids:
-                    new_papers.append({
-                        "uid": r.uid,
-                        "title": r.title,
-                        "authors": r.authors,
-                        "year": r.year,
-                        "abstract": r.snippet,
-                        "pdf_path": None,
-                        "pdf_url": r.pdf_url,
-                        "url": r.url,
-                        "source": r.source,
-                    })
-                    existing_uids.add(r.uid)
-
-    # ── Web: Google first, DuckDuckGo fallback; English-first sorting ──
-    if _source_enabled(cfg, "web"):
-        from src.ingest.web_fetcher import (
-            dedup_results,
-            filter_results_by_domain,
-            prioritize_results,
-            scrape_results,
-            search_duckduckgo,
-            search_google,
-        )
-
-        web_cfg = sources_cfg.get("web", {})
-        per_query = web_cfg.get("max_results_per_query", 8)
-        overfetch = int(web_cfg.get("overfetch_factor", 3))
-        do_scrape = web_cfg.get("scrape_pages", True)
-        scrape_max = web_cfg.get("scrape_max_chars", 30000)
-        web_delay = web_cfg.get("polite_delay_sec", 0.5)
-        prefer_google = web_cfg.get("prefer_google", True)
-        ddg_region = web_cfg.get("ddg_region", "us-en")
-        google_hl = web_cfg.get("google_hl", "en")
-        google_gl = web_cfg.get("google_gl", "us")
-        prefer_english = web_cfg.get("prefer_english", True)
-        max_zh_ratio = float(web_cfg.get("max_chinese_ratio", 0.25))
-        blocked_domains = web_cfg.get("blocked_domains", [])
-
-        for q in effective_web_queries:
-            logger.info("[Web] Searching: %s (max %d)", q, per_query)
-            try:
-                merged = []
-                raw_n = max(per_query * max(1, overfetch), per_query)
-
-                if prefer_google:
-                    merged.extend(search_google(q, max_results=raw_n, hl=google_hl, gl=google_gl))
-                if len(merged) < per_query:
-                    merged.extend(search_duckduckgo(q, max_results=raw_n, region=ddg_region))
-
-                results = dedup_results(merged)
-                results = filter_results_by_domain(results, blocked_domains=blocked_domains)
-                results = prioritize_results(
-                    results,
-                    max_results=per_query,
-                    prefer_english=prefer_english,
-                    max_chinese_ratio=max_zh_ratio,
-                )
-                results = [
-                    r for r in results
-                    if _is_topic_relevant(
-                        text=f"{r.title} {r.snippet}",
-                        topic_keywords=topic_keywords,
-                        block_terms=block_terms,
-                        min_hits=min_hits,
-                    )
-                ]
-                if do_scrape:
-                    results = scrape_results(
-                        results,
-                        polite_delay_sec=web_delay,
-                        max_chars=scrape_max,
-                    )
-                for r in results:
-                    if r.uid not in existing_web_uids:
-                        new_web.append({
-                            "uid": r.uid,
-                            "title": r.title,
-                            "url": r.url,
-                            "snippet": r.snippet,
-                            "body": r.body,
-                            "source": r.source,
-                        })
-                        existing_web_uids.add(r.uid)
-            except Exception as e:
-                logger.error("[Web] Failed for '%s': %s", q, e)
-
-    total = len(new_papers) + len(new_web)
     return {
         "papers": new_papers,
         "web_sources": new_web,
@@ -1035,7 +920,7 @@ def fetch_sources(state: ResearchState) -> Dict[str, Any]:
     }
 
 
-# ── Node: index_sources ─────────────────────────────────────────────
+# Node: index_sources
 
 
 def index_sources(state: ResearchState) -> Dict[str, Any]:
@@ -1049,11 +934,6 @@ def index_sources(state: ResearchState) -> Dict[str, Any]:
     globally (cross-run dedup) and each run's accessible doc_uids are
     recorded in the ``run_docs`` SQLite table.
     """
-    from src.ingest.chunking import chunk_text
-    from src.ingest.fetchers import init_run_tables, upsert_run_docs, upsert_run_session
-    from src.ingest.indexer import build_chroma_index
-    from src.workflows.traditional_rag import index_pdfs
-
     cfg = _get_cfg(state)
     root = Path(cfg.get("_root", "."))
     run_id = cfg.get("_run_id", "")
@@ -1070,16 +950,16 @@ def index_sources(state: ResearchState) -> Dict[str, Any]:
 
     # Ensure run tracking tables exist and record this run (idempotent)
     if run_id:
-        try:
-            init_run_tables(sqlite_path)
-            upsert_run_session(sqlite_path, run_id=run_id, topic=state.get("topic", ""))
-        except Exception as e:
-            logger.warning("run_session upsert failed: %s", e)
+            try:
+                init_run_tracking(sqlite_path)
+                upsert_run_session_record(sqlite_path, run_id=run_id, topic=state.get("topic", ""))
+            except Exception as e:
+                logger.warning("run_session upsert failed: %s", e)
 
     new_paper_ids: List[str] = []
     new_web_ids: List[str] = []
 
-    # ── Index PDFs → paper_collection ────────────────────────────────
+    # Index PDFs -> paper_collection
     already_indexed = set(state.get("indexed_paper_ids", []))
     papers = state.get("papers", [])
     to_index = [
@@ -1091,7 +971,7 @@ def index_sources(state: ResearchState) -> Dict[str, Any]:
     if to_index:
         pdf_paths = [Path(p["pdf_path"]) for p in to_index]
         try:
-            result = index_pdfs(
+            result = index_pdf_documents(
                 persist_dir=persist_dir,
                 collection_name=paper_collection,
                 pdfs=pdf_paths,
@@ -1107,11 +987,11 @@ def index_sources(state: ResearchState) -> Dict[str, Any]:
     all_submitted_paper_ids = [Path(p["pdf_path"]).stem for p in to_index]
     if run_id and all_submitted_paper_ids:
         try:
-            upsert_run_docs(sqlite_path, run_id=run_id, doc_uids=all_submitted_paper_ids, doc_type="paper")
+            upsert_run_doc_records(sqlite_path, run_id=run_id, doc_uids=all_submitted_paper_ids, doc_type="paper")
         except Exception as e:
             logger.warning("run_docs upsert (papers) failed: %s", e)
 
-    # ── Index web content → web_collection ───────────────────────────
+    # Index web content -> web_collection
     already_web = set(state.get("indexed_web_ids", []))
     web_sources = state.get("web_sources", [])
     to_index_web = [
@@ -1128,7 +1008,7 @@ def index_sources(state: ResearchState) -> Dict[str, Any]:
         if not chunks:
             continue
         try:
-            build_chroma_index(
+            build_web_index(
                 persist_dir=persist_dir,
                 collection_name=web_collection,
                 chunks=chunks,
@@ -1142,18 +1022,18 @@ def index_sources(state: ResearchState) -> Dict[str, Any]:
     # Record web doc_ids for this run
     if run_id and new_web_ids:
         try:
-            upsert_run_docs(sqlite_path, run_id=run_id, doc_uids=new_web_ids, doc_type="web")
+            upsert_run_doc_records(sqlite_path, run_id=run_id, doc_uids=new_web_ids, doc_type="web")
         except Exception as e:
             logger.warning("run_docs upsert (web) failed: %s", e)
 
     return {
         "indexed_paper_ids": new_paper_ids,
         "indexed_web_ids": new_web_ids,
-        "status": f"Indexed {len(new_paper_ids)} PDFs → '{paper_collection}', {len(new_web_ids)} web pages → '{web_collection}'",
+        "status": f"Indexed {len(new_paper_ids)} PDFs -> '{paper_collection}', {len(new_web_ids)} web pages -> '{web_collection}'",
     }
 
 
-# ── Node: analyze_sources ───────────────────────────────────────────
+# Node: analyze_sources
 
 
 def analyze_sources(state: ResearchState) -> Dict[str, Any]:
@@ -1166,6 +1046,10 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
     root = Path(cfg.get("_root", "."))
     model = cfg.get("llm", {}).get("model", "gpt-4.1-mini")
     temperature = cfg.get("llm", {}).get("temperature", 0.3)
+    limits_cfg = cfg.get("agent", {}).get("limits", {})
+    web_analysis_max_chars = int(
+        limits_cfg.get("analysis_web_content_max_chars", DEFAULT_ANALYSIS_WEB_CONTENT_MAX_CHARS)
+    )
     persist_dir = str(
         (root / cfg.get("index", {}).get("persist_dir", "data/indexes/chroma")).resolve()
     )
@@ -1180,7 +1064,7 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
     new_analyses: List[Dict[str, Any]] = []
     new_findings: List[str] = []
 
-    # ── Analyze papers ───────────────────────────────────────────────
+    # Analyze papers
     papers = state.get("papers", [])
     papers_to_analyze = [
         p for p in papers
@@ -1191,13 +1075,13 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
     for paper in papers_to_analyze:
         logger.info("[Paper] Analyzing: %s", paper["title"])
 
-        # Try RAG retrieval for indexed papers — restrict to this run's doc_ids
+        # Try RAG retrieval for indexed papers; restrict to this run's doc_ids
         chunks_text = ""
         if paper.get("pdf_path"):
             try:
-                from src.rag.retriever import retrieve
                 run_paper_ids = state.get("indexed_paper_ids") or None
-                hits = retrieve(
+                hits = retrieve_chunks(
+                    cfg=cfg,
                     persist_dir=persist_dir,
                     collection_name=paper_collection,
                     query=f"{topic} {paper['title']}",
@@ -1227,7 +1111,7 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
             chunks=chunks_text,
         )
 
-        raw = _llm_call(ANALYZE_PAPER_SYSTEM, prompt, model=model, temperature=temperature)
+        raw = _llm_call(ANALYZE_PAPER_SYSTEM, prompt, cfg=cfg, model=model, temperature=temperature)
 
         try:
             analysis = _parse_json(raw)
@@ -1252,7 +1136,7 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
         for f in analysis.get("key_findings", []):
             new_findings.append(f"[Paper: {paper['title']}] {f}")
 
-    # ── Analyze web sources ──────────────────────────────────────────
+    # Analyze web sources
     web_sources = state.get("web_sources", [])
     web_to_analyze = [
         w for w in web_sources
@@ -1265,8 +1149,8 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
 
         content = web.get("body", "") or web.get("snippet", "")
         # Truncate very long content to fit LLM context
-        if len(content) > 15000:
-            content = content[:15000] + "\n\n[... content truncated ...]"
+        if web_analysis_max_chars > 0 and len(content) > web_analysis_max_chars:
+            content = content[:web_analysis_max_chars] + "\n\n[... content truncated ...]"
         table_signals = _extract_table_signals(content)
         if table_signals:
             content += "\n\nPotential table-like evidence:\n" + "\n".join(f"- {t}" for t in table_signals)
@@ -1278,7 +1162,7 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
             content=content,
         )
 
-        raw = _llm_call(ANALYZE_WEB_SYSTEM, prompt, model=model, temperature=temperature)
+        raw = _llm_call(ANALYZE_WEB_SYSTEM, prompt, cfg=cfg, model=model, temperature=temperature)
 
         try:
             analysis = _parse_json(raw)
@@ -1311,7 +1195,7 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
     }
 
 
-# ── Node: synthesize ────────────────────────────────────────────────
+# Node: synthesize
 
 
 def synthesize(state: ResearchState) -> Dict[str, Any]:
@@ -1321,10 +1205,10 @@ def synthesize(state: ResearchState) -> Dict[str, Any]:
     temperature = cfg.get("llm", {}).get("temperature", 0.3)
     scope, budget = _load_budget_and_scope(state, cfg)
     source_rank_cfg = cfg.get("agent", {}).get("source_ranking", {})
-    core_min_a_ratio = float(source_rank_cfg.get("core_min_a_ratio", 0.7))
+    core_min_a_ratio = float(source_rank_cfg.get("core_min_a_ratio", DEFAULT_CORE_MIN_A_RATIO))
     max_refs = min(
-        int(cfg.get("agent", {}).get("report_max_sources", 40)),
-        int(budget.get("max_references", 20)),
+        int(cfg.get("agent", {}).get("report_max_sources", DEFAULT_REPORT_MAX_SOURCES)),
+        int(budget.get("max_references", DEFAULT_MAX_REFERENCES)),
     )
 
     topic = state["topic"]
@@ -1365,7 +1249,7 @@ def synthesize(state: ResearchState) -> Dict[str, Any]:
         ),
     )
 
-    raw = _llm_call(SYNTHESIZE_SYSTEM, prompt, model=model, temperature=temperature)
+    raw = _llm_call(SYNTHESIZE_SYSTEM, prompt, cfg=cfg, model=model, temperature=temperature)
 
     try:
         result = _parse_json(raw)
@@ -1401,7 +1285,7 @@ def synthesize(state: ResearchState) -> Dict[str, Any]:
     }
 
 
-# ── Node: evaluate_progress ─────────────────────────────────────────
+# Node: evaluate_progress
 
 
 def evaluate_progress(state: ResearchState) -> Dict[str, Any]:
@@ -1420,7 +1304,7 @@ def evaluate_progress(state: ResearchState) -> Dict[str, Any]:
             "status": f"Max iterations ({max_iter}) reached, generating report",
         }
 
-    # No sources at all → stop
+    # No sources at all -> stop
     if not state.get("papers") and not state.get("web_sources"):
         return {
             "should_continue": False,
@@ -1442,7 +1326,7 @@ def evaluate_progress(state: ResearchState) -> Dict[str, Any]:
         gaps="\n".join(f"- {g}" for g in state.get("gaps", [])) or "(none identified)",
     )
 
-    raw = _llm_call(EVALUATE_SYSTEM, prompt, model=model, temperature=temperature)
+    raw = _llm_call(EVALUATE_SYSTEM, prompt, cfg=cfg, model=model, temperature=temperature)
 
     try:
         result = _parse_json(raw)
@@ -1466,7 +1350,7 @@ def evaluate_progress(state: ResearchState) -> Dict[str, Any]:
     }
 
 
-# ── Node: generate_report ───────────────────────────────────────────
+# Node: generate_report
 
 
 def generate_report(state: ResearchState) -> Dict[str, Any]:
@@ -1477,14 +1361,14 @@ def generate_report(state: ResearchState) -> Dict[str, Any]:
     language = cfg.get("agent", {}).get("language", "en")
     scope, budget = _load_budget_and_scope(state, cfg)
     max_report_sources = min(
-        int(cfg.get("agent", {}).get("report_max_sources", 40)),
-        int(budget.get("max_references", 20)),
+        int(cfg.get("agent", {}).get("report_max_sources", DEFAULT_REPORT_MAX_SOURCES)),
+        int(budget.get("max_references", DEFAULT_MAX_REFERENCES)),
     )
     source_rank_cfg = cfg.get("agent", {}).get("source_ranking", {})
-    core_min_a_ratio = float(source_rank_cfg.get("core_min_a_ratio", 0.7))
-    background_max_c = int(source_rank_cfg.get("background_max_c", 3))
+    core_min_a_ratio = float(source_rank_cfg.get("core_min_a_ratio", DEFAULT_CORE_MIN_A_RATIO))
+    background_max_c = int(source_rank_cfg.get("background_max_c", DEFAULT_BACKGROUND_MAX_C))
     topic_filter_cfg = cfg.get("agent", {}).get("topic_filter", {})
-    block_terms = topic_filter_cfg.get("block_terms", _DEFAULT_TOPIC_BLOCK_TERMS)
+    block_terms = topic_filter_cfg.get("block_terms", DEFAULT_TOPIC_BLOCK_TERMS)
 
     topic = state["topic"]
     questions = "\n".join(f"- {q}" for q in state.get("research_questions", []))
@@ -1609,7 +1493,7 @@ def generate_report(state: ResearchState) -> Dict[str, Any]:
 
     system = REPORT_SYSTEM_ZH if language == "zh" else REPORT_SYSTEM
 
-    report = _llm_call(system, prompt, model=model, temperature=temperature)
+    report = _llm_call(system, prompt, cfg=cfg, model=model, temperature=temperature)
     report = _clean_reference_section(report, max_refs=max_report_sources)
 
     critic = _critic_report(
@@ -1618,7 +1502,7 @@ def generate_report(state: ResearchState) -> Dict[str, Any]:
         research_questions=state.get("research_questions", []),
         claim_map=claim_map,
         max_refs=max_report_sources,
-        max_sections=int(budget.get("max_sections", 5)),
+        max_sections=int(budget.get("max_sections", DEFAULT_MAX_SECTIONS)),
         block_terms=block_terms,
     )
     repair_attempted = bool(state.get("repair_attempted", False))
@@ -1631,6 +1515,7 @@ def generate_report(state: ResearchState) -> Dict[str, Any]:
             claim_map_text=claim_map_text,
             allowed_refs=allowed_refs,
             max_refs=max_report_sources,
+            cfg=cfg,
             model=model,
             temperature=temperature,
         )
@@ -1641,7 +1526,7 @@ def generate_report(state: ResearchState) -> Dict[str, Any]:
             research_questions=state.get("research_questions", []),
             claim_map=claim_map,
             max_refs=max_report_sources,
-            max_sections=int(budget.get("max_sections", 5)),
+            max_sections=int(budget.get("max_sections", DEFAULT_MAX_SECTIONS)),
             block_terms=block_terms,
         )
         repair_attempted = True
@@ -1664,3 +1549,4 @@ def generate_report(state: ResearchState) -> Dict[str, Any]:
         "acceptance_metrics": acceptance_metrics,
         "status": "Research report generated",
     }
+

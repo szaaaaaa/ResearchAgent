@@ -1,0 +1,127 @@
+from __future__ import annotations
+
+from pathlib import Path
+import unittest
+from unittest.mock import Mock, patch
+
+from src.agent.core import factories
+from src.agent.providers import llm_provider, retrieval_provider, search_provider
+
+
+class FactoriesAndProvidersTest(unittest.TestCase):
+    def test_create_llm_backend_resolves_name_from_config(self) -> None:
+        dummy_backend = object()
+        cfg = {"providers": {"llm": {"backend": "custom_llm"}}}
+        with patch("src.agent.core.factories.ensure_plugins_registered") as ensure_mock:
+            with patch("src.agent.core.factories.get_llm_backend", return_value=dummy_backend) as get_mock:
+                out = factories.create_llm_backend(cfg)
+        ensure_mock.assert_called_once()
+        get_mock.assert_called_once_with("custom_llm")
+        self.assertIs(out, dummy_backend)
+
+    def test_create_search_backend_resolves_name_from_config(self) -> None:
+        dummy_backend = object()
+        cfg = {"providers": {"search": {"backend": "custom_search"}}}
+        with patch("src.agent.core.factories.ensure_plugins_registered") as ensure_mock:
+            with patch("src.agent.core.factories.get_search_backend", return_value=dummy_backend) as get_mock:
+                out = factories.create_search_backend(cfg)
+        ensure_mock.assert_called_once()
+        get_mock.assert_called_once_with("custom_search")
+        self.assertIs(out, dummy_backend)
+
+    def test_create_retriever_backend_resolves_name_from_config(self) -> None:
+        dummy_backend = object()
+        cfg = {"providers": {"retrieval": {"backend": "custom_retriever"}}}
+        with patch("src.agent.core.factories.ensure_plugins_registered") as ensure_mock:
+            with patch("src.agent.core.factories.get_retriever_backend", return_value=dummy_backend) as get_mock:
+                out = factories.create_retriever_backend(cfg)
+        ensure_mock.assert_called_once()
+        get_mock.assert_called_once_with("custom_retriever")
+        self.assertIs(out, dummy_backend)
+
+    def test_call_llm_uses_provider_defaults(self) -> None:
+        backend = Mock()
+        backend.generate.return_value = "ok"
+        cfg = {
+            "llm": {},
+            "providers": {"llm": {"default_model": "provider-model", "default_temperature": 0.65}},
+        }
+        with patch("src.agent.providers.llm_provider.create_llm_backend", return_value=backend):
+            result = llm_provider.call_llm(system_prompt="sys", user_prompt="usr", cfg=cfg)
+
+        self.assertEqual(result, "ok")
+        kwargs = backend.generate.call_args.kwargs
+        self.assertEqual(kwargs["model"], "provider-model")
+        self.assertAlmostEqual(kwargs["temperature"], 0.65, places=6)
+        self.assertEqual(kwargs["system_prompt"], "sys")
+        self.assertEqual(kwargs["user_prompt"], "usr")
+
+    def test_call_llm_retries_then_succeeds(self) -> None:
+        backend = Mock()
+        backend.generate.side_effect = [RuntimeError("first"), "ok-after-retry"]
+        cfg = {"providers": {"llm": {"retries": 1, "retry_backoff_sec": 0.01, "backend": "dummy"}}}
+        with patch("src.agent.providers.llm_provider.create_llm_backend", return_value=backend):
+            with patch("src.agent.providers.llm_provider.time.sleep") as sleep_mock:
+                out = llm_provider.call_llm(system_prompt="s", user_prompt="u", cfg=cfg)
+
+        self.assertEqual(out, "ok-after-retry")
+        self.assertEqual(backend.generate.call_count, 2)
+        sleep_mock.assert_called_once_with(0.01)
+
+    def test_call_llm_exhausts_retries_and_raises(self) -> None:
+        backend = Mock()
+        backend.generate.side_effect = RuntimeError("always-fail")
+        cfg = {"providers": {"llm": {"retries": 2, "retry_backoff_sec": 0, "backend": "dummy"}}}
+        with patch("src.agent.providers.llm_provider.create_llm_backend", return_value=backend):
+            with self.assertRaises(RuntimeError):
+                llm_provider.call_llm(system_prompt="s", user_prompt="u", cfg=cfg)
+        self.assertEqual(backend.generate.call_count, 3)
+
+    def test_fetch_candidates_delegates_to_selected_backend(self) -> None:
+        backend = Mock()
+        expected = {"papers": [{"uid": "p1"}], "web_sources": [{"uid": "w1"}]}
+        backend.fetch.return_value = expected
+        cfg = {"providers": {"search": {"backend": "dummy_search"}}}
+        query_routes = {"q1": {"use_web": True, "use_academic": True}}
+        with patch("src.agent.providers.search_provider.create_search_backend", return_value=backend):
+            out = search_provider.fetch_candidates(
+                cfg=cfg,
+                root=Path("."),
+                academic_queries=["q1"],
+                web_queries=["q1"],
+                query_routes=query_routes,
+            )
+        self.assertEqual(out, expected)
+        kwargs = backend.fetch.call_args.kwargs
+        self.assertEqual(kwargs["cfg"], cfg)
+        self.assertEqual(kwargs["academic_queries"], ["q1"])
+        self.assertEqual(kwargs["web_queries"], ["q1"])
+        self.assertEqual(kwargs["query_routes"], query_routes)
+
+    def test_retrieve_chunks_delegates_to_selected_backend(self) -> None:
+        backend = Mock()
+        backend.retrieve.return_value = [{"text": "chunk"}]
+        with patch("src.agent.providers.retrieval_provider.create_retriever_backend", return_value=backend):
+            out = retrieval_provider.retrieve_chunks(
+                cfg={"providers": {"retrieval": {"backend": "dummy"}}},
+                persist_dir="p",
+                collection_name="c",
+                query="q",
+                top_k=4,
+                candidate_k=8,
+                reranker_model="rm",
+                allowed_doc_ids=["d1"],
+            )
+        self.assertEqual(out, [{"text": "chunk"}])
+        kwargs = backend.retrieve.call_args.kwargs
+        self.assertEqual(kwargs["persist_dir"], "p")
+        self.assertEqual(kwargs["collection_name"], "c")
+        self.assertEqual(kwargs["query"], "q")
+        self.assertEqual(kwargs["top_k"], 4)
+        self.assertEqual(kwargs["candidate_k"], 8)
+        self.assertEqual(kwargs["reranker_model"], "rm")
+        self.assertEqual(kwargs["allowed_doc_ids"], ["d1"])
+
+
+if __name__ == "__main__":
+    unittest.main()

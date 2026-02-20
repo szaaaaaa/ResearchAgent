@@ -43,6 +43,9 @@ from typing import Any, Dict
 
 from langgraph.graph import END, StateGraph
 
+from src.agent.core.config import normalize_and_validate_config
+from src.agent.core.events import instrument_node
+from src.agent.core.schemas import ResearchState
 from src.agent.nodes import (
     analyze_sources,
     evaluate_progress,
@@ -52,7 +55,6 @@ from src.agent.nodes import (
     plan_research,
     synthesize,
 )
-from src.agent.state import ResearchState
 
 logger = logging.getLogger(__name__)
 
@@ -69,13 +71,13 @@ def build_graph() -> StateGraph:
     graph = StateGraph(ResearchState)
 
     # ── Add nodes ────────────────────────────────────────────────────
-    graph.add_node("plan_research", plan_research)
-    graph.add_node("fetch_sources", fetch_sources)
-    graph.add_node("index_sources", index_sources)
-    graph.add_node("analyze_sources", analyze_sources)
-    graph.add_node("synthesize", synthesize)
-    graph.add_node("evaluate_progress", evaluate_progress)
-    graph.add_node("generate_report", generate_report)
+    graph.add_node("plan_research", instrument_node("plan_research", plan_research))
+    graph.add_node("fetch_sources", instrument_node("fetch_sources", fetch_sources))
+    graph.add_node("index_sources", instrument_node("index_sources", index_sources))
+    graph.add_node("analyze_sources", instrument_node("analyze_sources", analyze_sources))
+    graph.add_node("synthesize", instrument_node("synthesize", synthesize))
+    graph.add_node("evaluate_progress", instrument_node("evaluate_progress", evaluate_progress))
+    graph.add_node("generate_report", instrument_node("generate_report", generate_report))
 
     # ── Edges ────────────────────────────────────────────────────────
     graph.set_entry_point("plan_research")
@@ -121,6 +123,7 @@ def run_research(
     ResearchState
         Final state containing the report and all intermediate data.
     """
+    cfg = normalize_and_validate_config(cfg)
     root = Path(root).resolve()
     max_iterations = cfg.get("agent", {}).get("max_iterations", 3)
 

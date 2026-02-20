@@ -37,8 +37,23 @@ llm:
   model: gpt-5.2
   temperature: 0.3
 
+providers:
+  llm:
+    backend: openai_chat
+    retries: 1
+    retry_backoff_sec: 1.0
+  search:
+    backend: default_search
+    academic_order: [google_scholar, semantic_scholar]
+    web_order: [google, duckduckgo]
+    query_all_academic: false
+    query_all_web: false
+  retrieval:
+    backend: default_retriever
+
 # ── Agent-specific settings ─────────────────────────────────────────
 agent:
+  seed: 42
   max_iterations: 3           # max plan→fetch→analyze→synthesize loops
   papers_per_query: 5         # papers to fetch per search query (arXiv)
   max_queries_per_iteration: 3 # search queries generated per iteration
@@ -55,9 +70,41 @@ agent:
   dynamic_retrieval:
     simple_query_academic: false
     simple_query_pdf: false
+    simple_query_terms:
+      - what is
+      - intro
+      - introduction
+      - guide
+      - tutorial
+      - vs
+      - difference
+      - overview
+      - best practices
+      - compare
+      - comparison
+      - 是什么
+      - 区别
+      - 对比
+      - 入门
+    deep_query_terms:
+      - benchmark
+      - evaluation
+      - privacy
+      - governance
+      - architecture
+      - framework
+      - algorithm
+      - ablation
+      - latency
+      - token
+      - memory
+      - theorem
+      - proof
   memory:
     max_findings_for_context: 20
     max_context_chars: 3500
+  limits:
+    analysis_web_content_max_chars: 15000
   topic_filter:
     min_keyword_hits: 1
     include_terms: []

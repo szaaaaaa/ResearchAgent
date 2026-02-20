@@ -13,9 +13,13 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import random
+import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
+import yaml
 
 # ── Ensure project root is on sys.path ──────────────────────────────
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +28,7 @@ if str(ROOT) not in sys.path:
 
 from src.common.config_utils import expand_vars, load_yaml
 from src.common.runtime_utils import ensure_dir, now_tag
+from src.agent.core.config import normalize_and_validate_config
 
 ALL_SOURCES = ("arxiv", "google_scholar", "semantic_scholar", "web")
 
@@ -35,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max_iter", type=int, default=None, help="Override max iterations")
     p.add_argument("--papers_per_query", type=int, default=None, help="Papers per search query")
     p.add_argument("--model", type=str, default=None, help="Override LLM model")
+    p.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
     p.add_argument("--language", type=str, default=None, choices=["en", "zh"], help="Report language")
     p.add_argument("--output_dir", type=str, default=None, help="Override output directory")
     p.add_argument(
@@ -62,6 +68,42 @@ def _resolve_cfg_paths(cfg: dict) -> dict:
             return expand_vars(obj, cfg)
         return obj
     return _walk(cfg)
+
+
+def _append_event_line(path: Path, payload: dict) -> None:
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _git_commit_hash(root: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(root),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        commit = (result.stdout or "").strip()
+        return commit or None
+    except Exception:
+        return None
+
+
+def _resolve_run_seed(cfg: dict, cli_seed: int | None) -> int:
+    if cli_seed is not None:
+        return int(cli_seed)
+    return int(cfg.get("agent", {}).get("seed", 42))
+
+
+def _set_global_seed(seed: int) -> None:
+    random.seed(seed)
+    try:
+        import numpy as np  # type: ignore
+    except Exception:
+        return
+    np.random.seed(seed)
 
 
 def main() -> None:
@@ -105,6 +147,34 @@ def main() -> None:
     if args.no_scrape:
         cfg["sources"].setdefault("web", {})["scrape_pages"] = False
 
+    # Normalize + validate config into a stable schema.
+    cfg = normalize_and_validate_config(cfg)
+    run_seed = _resolve_run_seed(cfg, args.seed)
+    cfg.setdefault("agent", {})["seed"] = run_seed
+    _set_global_seed(run_seed)
+    git_commit_hash = _git_commit_hash(ROOT)
+
+    # Create run_dir before execution so node events can stream to disk.
+    out_dir = Path(args.output_dir) if args.output_dir else (ROOT / cfg.get("paths", {}).get("outputs_dir", "outputs"))
+    ensure_dir(out_dir)
+    tag = now_tag()
+    run_dir = out_dir / f"run_{tag}"
+    ensure_dir(run_dir)
+    events_path = run_dir / "events.log"
+    cfg["_events_file"] = str(events_path)
+    _append_event_line(
+        events_path,
+        {
+            "ts": datetime.now().isoformat(),
+            "event": "run_start",
+            "topic": args.topic,
+            "tag": tag,
+            "sources": [s for s in ALL_SOURCES if cfg["sources"].get(s, {}).get("enabled")],
+            "seed": run_seed,
+            "git_commit_hash": git_commit_hash,
+        },
+    )
+
     # ── Run agent ────────────────────────────────────────────────────
     from src.agent.graph import run_research
 
@@ -118,18 +188,22 @@ def main() -> None:
     logger.info("Sources: %s", ", ".join(enabled))
     logger.info("=" * 60)
 
+    run_started_global = time.time()
     final_state = run_research(topic=args.topic, cfg=cfg, root=ROOT)
 
     # ── Write outputs ────────────────────────────────────────────────
-    out_dir = Path(args.output_dir) if args.output_dir else (ROOT / cfg.get("paths", {}).get("outputs_dir", "outputs"))
-    ensure_dir(out_dir)
-    tag = now_tag()
+    run_started = run_started_global
+
+    cfg_snapshot_path = run_dir / "config.snapshot.yaml"
+    cfg_snapshot_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
     # Save report
     report = final_state.get("report", "")
     report_path = out_dir / f"research_report_{tag}.md"
     report_path.write_text(report, encoding="utf-8")
     logger.info("Report saved: %s", report_path)
+    run_report_path = run_dir / "research_report.md"
+    run_report_path.write_text(report, encoding="utf-8")
 
     # Save full state (JSON-serializable subset)
     state_export = {
@@ -174,6 +248,54 @@ def main() -> None:
     state_path = out_dir / f"research_state_{tag}.json"
     state_path.write_text(json.dumps(state_export, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info("State saved: %s", state_path)
+    run_state_path = run_dir / "research_state.json"
+    run_state_path.write_text(json.dumps(state_export, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    metrics_payload = {
+        "acceptance_metrics": final_state.get("acceptance_metrics", {}),
+        "counts": {
+            "papers": len(final_state.get("papers", [])),
+            "web_sources": len(final_state.get("web_sources", [])),
+            "analyses": len(final_state.get("analyses", [])),
+            "iterations": int(final_state.get("iteration", 0)),
+        },
+    }
+    metrics_path = run_dir / "metrics.json"
+    metrics_path.write_text(json.dumps(metrics_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    elapsed = time.time() - run_started
+    run_meta = {
+        "topic": args.topic,
+        "run_tag": tag,
+        "run_id": final_state.get("run_id", ""),
+        "timestamp": datetime.now().isoformat(),
+        "elapsed_sec": round(elapsed, 3),
+        "model": cfg.get("llm", {}).get("model"),
+        "providers": cfg.get("providers", {}),
+        "seed": run_seed,
+        "git_commit_hash": git_commit_hash,
+        "sources_enabled": enabled,
+        "max_iterations": cfg.get("agent", {}).get("max_iterations", 3),
+        "config_snapshot_path": str(cfg_snapshot_path),
+        "report_path": str(run_report_path),
+        "state_path": str(run_state_path),
+        "metrics_path": str(metrics_path),
+    }
+    run_meta_path = run_dir / "run_meta.json"
+    run_meta_path.write_text(json.dumps(run_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    _append_event_line(
+        events_path,
+        {
+            "ts": datetime.now().isoformat(),
+            "event": "run_end",
+            "run_id": final_state.get("run_id", ""),
+            "iterations": int(final_state.get("iteration", 0)),
+            "papers": len(final_state.get("papers", [])),
+            "web_sources": len(final_state.get("web_sources", [])),
+            "elapsed_sec": round(elapsed, 3),
+        },
+    )
 
     # ── Summary ──────────────────────────────────────────────────────
     n_papers = len(final_state.get("papers", []))
@@ -187,6 +309,7 @@ def main() -> None:
     logger.info("Total analyses: %d", n_analyses)
     logger.info("Iterations: %d", final_state.get("iteration", 0))
     logger.info("Report: %s", report_path)
+    logger.info("Run dir: %s", run_dir)
     logger.info("=" * 60)
 
     # Print report to stdout
