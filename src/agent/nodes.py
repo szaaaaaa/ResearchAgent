@@ -314,6 +314,61 @@ def _analysis_score_for_rq(rq: str, a: Dict[str, Any]) -> float:
     return relevance + overlap * 0.08 + tier_bonus
 
 
+def _claim_candidates(src: Dict[str, Any]) -> List[str]:
+    out: List[str] = []
+    kf = src.get("key_findings", [])
+    if isinstance(kf, list):
+        for item in kf[:5]:
+            s = re.sub(r"\s+", " ", str(item or "")).strip()
+            if s:
+                out.append(s)
+    summary = re.sub(r"\s+", " ", str(src.get("summary") or "")).strip()
+    if summary:
+        first = re.split(r"(?<=[\.\!\?。！？])\s+", summary)[0].strip()
+        if first:
+            out.append(first)
+    # De-duplicate while preserving order
+    seen = set()
+    deduped: List[str] = []
+    for x in out:
+        k = x.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        deduped.append(x)
+    return deduped
+
+
+def _claim_has_rq_signal(rq: str, claim: str) -> bool:
+    rq_tokens = {t for t in _tokenize(rq) if t not in _STOPWORDS}
+    if not rq_tokens:
+        return True
+    claim_tokens = set(_tokenize(claim))
+    return bool(rq_tokens & claim_tokens)
+
+
+def _ensure_unique_claim_text(*, claim_text: str, rq: str, used: set[str]) -> str:
+    base = re.sub(r"\s+", " ", str(claim_text or "")).strip()
+    if not base:
+        base = f"Evidence indicates a meaningful difference related to: {rq}"
+    if base.lower() not in used:
+        return base
+
+    rq_short = re.sub(r"\s+", " ", str(rq or "")).strip()
+    if len(rq_short) > 80:
+        rq_short = rq_short[:77] + "..."
+    scoped = f"[RQ] {rq_short}: {base}"
+    if scoped.lower() not in used:
+        return scoped
+
+    i = 2
+    while True:
+        candidate = f"{scoped} ({i})"
+        if candidate.lower() not in used:
+            return candidate
+        i += 1
+
+
 def _build_claim_evidence_map(
     *,
     research_questions: List[str],
@@ -321,6 +376,7 @@ def _build_claim_evidence_map(
     core_min_a_ratio: float,
 ) -> List[Dict[str, Any]]:
     claims: List[Dict[str, Any]] = []
+    used_claims: set[str] = set()
     for rq in research_questions:
         ranked = sorted(analyses, key=lambda a: _analysis_score_for_rq(rq, a), reverse=True)
         if not ranked:
@@ -346,14 +402,22 @@ def _build_claim_evidence_map(
                     break
 
         best = selected[0]
+        claim_candidates: List[str] = []
+        for src in selected:
+            claim_candidates.extend(_claim_candidates(src))
+
         claim_text = ""
-        kf = best.get("key_findings", [])
-        if isinstance(kf, list) and kf:
-            claim_text = str(kf[0]).strip()
+        for cand in claim_candidates:
+            if _claim_has_rq_signal(rq, cand) and cand.lower() not in used_claims:
+                claim_text = cand
+                break
         if not claim_text:
-            claim_text = str(best.get("summary") or "").split(".")[0].strip()
-        if not claim_text:
-            claim_text = f"Evidence indicates a meaningful difference related to: {rq}"
+            for cand in claim_candidates:
+                if cand.lower() not in used_claims:
+                    claim_text = cand
+                    break
+        claim_text = _ensure_unique_claim_text(claim_text=claim_text, rq=rq, used=used_claims)
+        used_claims.add(claim_text.lower())
 
         evidence = []
         for src in selected:
@@ -750,6 +814,34 @@ def _clean_reference_section(report: str, max_refs: int) -> str:
         return report
     renumbered = [f"{i}. {item}" for i, item in enumerate(dedup_refs, 1)]
     return "\n".join(head + [""] + renumbered) + "\n"
+
+
+def _strip_outer_markdown_fence(report: str) -> str:
+    """Remove a top-level ```markdown wrapper while preserving inner code blocks."""
+    lines = report.splitlines()
+    first_idx = -1
+    for i, line in enumerate(lines):
+        if line.strip():
+            first_idx = i
+            break
+    if first_idx < 0:
+        return report
+
+    first = lines[first_idx].strip()
+    if not first.startswith("```"):
+        return report
+
+    close_idx = -1
+    for i in range(first_idx + 1, len(lines)):
+        if lines[i].strip() == "```":
+            close_idx = i
+            break
+    if close_idx < 0:
+        return report
+
+    inner = lines[:first_idx] + lines[first_idx + 1 : close_idx] + lines[close_idx + 1 :]
+    cleaned = "\n".join(inner).strip()
+    return cleaned + "\n" if cleaned else ""
 
 
 # Node: plan_research
@@ -1494,6 +1586,7 @@ def generate_report(state: ResearchState) -> Dict[str, Any]:
     system = REPORT_SYSTEM_ZH if language == "zh" else REPORT_SYSTEM
 
     report = _llm_call(system, prompt, cfg=cfg, model=model, temperature=temperature)
+    report = _strip_outer_markdown_fence(report)
     report = _clean_reference_section(report, max_refs=max_report_sources)
 
     critic = _critic_report(
@@ -1519,6 +1612,7 @@ def generate_report(state: ResearchState) -> Dict[str, Any]:
             model=model,
             temperature=temperature,
         )
+        report = _strip_outer_markdown_fence(report)
         report = _clean_reference_section(report, max_refs=max_report_sources)
         critic = _critic_report(
             topic=topic,

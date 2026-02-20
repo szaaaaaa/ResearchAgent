@@ -136,6 +136,60 @@ class NodesHelpersTest(unittest.TestCase):
         self.assertNotIn("Duplicate", out)
         self.assertNotIn("Appendix", out)
 
+    def test_strip_outer_markdown_fence_removes_wrapper(self) -> None:
+        report = (
+            "```markdown\n"
+            "# Title\n\n"
+            "## References\n"
+            "1. A https://example.com/a\n"
+            "```\n"
+        )
+        out = nodes._strip_outer_markdown_fence(report)
+        self.assertTrue(out.startswith("# Title"))
+        self.assertNotIn("```markdown", out)
+        self.assertNotIn("\n```\n", out)
+
+        inner_code = "# Title\n\n```python\nprint(1)\n```\n"
+        untouched = nodes._strip_outer_markdown_fence(inner_code)
+        self.assertEqual(untouched, inner_code)
+
+    def test_build_claim_evidence_map_avoids_duplicate_claims(self) -> None:
+        analyses = [
+            {
+                "uid": "arxiv:1",
+                "title": "Paper A",
+                "summary": "Agentic RAG differs from traditional RAG through adaptive retrieval.",
+                "key_findings": [
+                    "Agentic RAG differs from traditional RAG through adaptive retrieval."
+                ],
+                "relevance_score": 0.9,
+                "limitations": [],
+                "source": "arxiv",
+            },
+            {
+                "uid": "arxiv:2",
+                "title": "Paper B",
+                "summary": "Agentic RAG differs from traditional RAG through adaptive retrieval.",
+                "key_findings": [
+                    "Agentic RAG differs from traditional RAG through adaptive retrieval."
+                ],
+                "relevance_score": 0.8,
+                "limitations": [],
+                "source": "arxiv",
+            },
+        ]
+        out = nodes._build_claim_evidence_map(
+            research_questions=[
+                "What are architecture differences in agentic RAG?",
+                "How should we evaluate trajectories in agentic RAG?",
+            ],
+            analyses=analyses,
+            core_min_a_ratio=0.7,
+        )
+        claims = [x["claim"] for x in out]
+        self.assertEqual(len(claims), 2)
+        self.assertEqual(len(set(claims)), 2)
+
     def test_compute_acceptance_metrics(self) -> None:
         empty = nodes._compute_acceptance_metrics(evidence_audit_log=[], report_critic={"issues": []})
         self.assertFalse(empty["a_ratio_pass"])

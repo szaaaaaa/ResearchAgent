@@ -1,0 +1,80 @@
+{
+  "topic": "Agentic RAG architecture differences",
+  "research_questions": [
+    "What architecture differences exist between agentic RAG and traditional RAG?"
+  ],
+  "scope": {
+    "intent": "comparison",
+    "allowed_sections": [
+      "Architecture and Workflow Differences",
+      "Practical Recommendations"
+    ],
+    "out_of_scope_policy": "future_work_only"
+  },
+  "budget": {
+    "max_research_questions": 3,
+    "max_sections": 3,
+    "max_references": 10
+  },
+  "papers": [
+    {
+      "uid": "arxiv:2401.12345",
+      "title": "Agentic RAG Loops",
+      "source": "arxiv"
+    }
+  ],
+  "web_sources": [],
+  "claim_evidence_map": [
+    {
+      "research_question": "What architecture differences exist between agentic RAG and traditional RAG?",
+      "claim": "Agentic RAG architecture uses iterative planning loops for multi-hop retrieval.",
+      "evidence": [
+        {
+          "uid": "arxiv:2401.12345",
+          "title": "Agentic RAG Loops",
+          "url": "https://arxiv.org/abs/2401.12345",
+          "tier": "A",
+          "snippet": "Iterative planning loops improve multi-hop retrieval quality."
+        },
+        {
+          "uid": "arxiv:2402.00001",
+          "title": "Traditional vs Agentic RAG",
+          "url": "https://arxiv.org/abs/2402.00001",
+          "tier": "A",
+          "snippet": "Agentic orchestration decomposes and refines retrieval steps."
+        }
+      ],
+      "strength": "A",
+      "caveat": "Domain transfer can still require prompt tuning."
+    }
+  ],
+  "evidence_audit_log": [
+    {
+      "research_question": "What architecture differences exist between agentic RAG and traditional RAG?",
+      "claims_count": 1,
+      "evidence_count": 2,
+      "a_count": 2,
+      "ab_count": 2,
+      "a_ratio": 1.0,
+      "gaps": []
+    }
+  ],
+  "report_critic": {
+    "pass": true,
+    "issues": []
+  },
+  "acceptance_metrics": {
+    "avg_a_evidence_ratio": 1.0,
+    "a_ratio_pass": true,
+    "rq_min2_evidence_rate": 1.0,
+    "rq_coverage_pass": true,
+    "reference_budget_compliant": true,
+    "run_view_isolation_active": true,
+    "critic_issues": []
+  },
+  "iterations": 1,
+  "sources_enabled": [
+    "arxiv",
+    "web"
+  ]
+}
