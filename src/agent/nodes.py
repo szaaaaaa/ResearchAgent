@@ -28,15 +28,10 @@ from src.agent.core.config import (
     DEFAULT_DEEP_QUERY_TERMS,
     DEFAULT_TOPIC_BLOCK_TERMS,
 )
+from src.agent.core.executor import TaskRequest
+from src.agent.core.executor_router import dispatch
 from src.agent.core.schemas import ResearchState
-from src.agent.infra.indexing.chroma_indexing import (
-    build_web_index,
-    chunk_text,
-    index_pdf_documents,
-    init_run_tracking,
-    upsert_run_doc_records,
-    upsert_run_session_record,
-)
+from src.agent.core.state_access import sget, to_namespaced_update, with_flattened_legacy_view
 from src.agent.prompts import (
     ANALYZE_PAPER_SYSTEM,
     ANALYZE_PAPER_USER,
@@ -53,7 +48,6 @@ from src.agent.prompts import (
     SYNTHESIZE_SYSTEM,
     SYNTHESIZE_USER,
 )
-from src.agent.providers import call_llm, fetch_candidates, retrieve_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -101,14 +95,22 @@ def _llm_call(
     model: str = "gpt-4.1-mini",
     temperature: float = 0.3,
 ) -> str:
-    """Thin wrapper around provider-based LLM calls."""
-    return call_llm(
-        system_prompt=system,
-        user_prompt=user,
-        cfg=cfg or {},
-        model=model,
-        temperature=temperature,
+    """Thin wrapper around executor-routed LLM calls."""
+    result = dispatch(
+        TaskRequest(
+            action="llm_generate",
+            params={
+                "system_prompt": system,
+                "user_prompt": user,
+                "model": model,
+                "temperature": temperature,
+            },
+        ),
+        cfg or {},
     )
+    if not result.success:
+        raise RuntimeError(result.error or "llm_generate failed")
+    return str(result.data.get("text", ""))
 
 
 def _parse_json(text: str) -> Dict[str, Any]:
@@ -124,6 +126,16 @@ def _parse_json(text: str) -> Dict[str, Any]:
 def _get_cfg(state: ResearchState) -> Dict[str, Any]:
     """Return the config dict attached to state (set at graph init)."""
     return state.get("_cfg", {})
+
+
+def _state_view(state: ResearchState) -> Dict[str, Any]:
+    """Materialize flat aliases from namespaces for legacy node logic."""
+    return with_flattened_legacy_view(state)
+
+
+def _ns(update: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert flat node update payload to namespaced patch format."""
+    return to_namespaced_update(update)
 
 
 def _source_enabled(cfg: Dict[str, Any], source_name: str) -> bool:
@@ -167,8 +179,8 @@ def _default_sections_for_intent(intent: str) -> List[str]:
 
 
 def _load_budget_and_scope(state: ResearchState, cfg: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, int]]:
-    existing_scope = state.get("scope") or {}
-    existing_budget = state.get("budget") or {}
+    existing_scope = sget(state, "scope", {}) or {}
+    existing_budget = sget(state, "budget", {}) or {}
     if existing_scope and existing_budget:
         return existing_scope, existing_budget
 
@@ -181,7 +193,7 @@ def _load_budget_and_scope(state: ResearchState, cfg: Dict[str, Any]) -> tuple[D
         "max_sections": int(budget_cfg.get("max_sections", DEFAULT_MAX_SECTIONS)),
         "max_references": int(budget_cfg.get("max_references", DEFAULT_MAX_REFERENCES)),
     }
-    intent = _infer_intent(state.get("topic", ""))
+    intent = _infer_intent(sget(state, "topic", ""))
     allowed = _default_sections_for_intent(intent)[: max(1, budget["max_sections"])]
     scope = {
         "intent": intent,
@@ -674,9 +686,9 @@ def _compute_acceptance_metrics(
 
 def _build_topic_keywords(state: ResearchState, cfg: Dict[str, Any]) -> set[str]:
     raw = " ".join(
-        [state.get("topic", "")]
-        + state.get("research_questions", [])
-        + state.get("search_queries", [])
+        [sget(state, "topic", "")]
+        + sget(state, "research_questions", [])
+        + sget(state, "search_queries", [])
     )
     custom = cfg.get("agent", {}).get("topic_filter", {}).get("include_terms", [])
     raw += " " + " ".join(custom if isinstance(custom, list) else [])
@@ -849,6 +861,7 @@ def _strip_outer_markdown_fence(report: str) -> str:
 
 def plan_research(state: ResearchState) -> Dict[str, Any]:
     """Decompose the topic into research questions, academic queries, and web queries."""
+    state = _state_view(state)
     topic = state["topic"]
     iteration = state.get("iteration", 0)
     cfg = _get_cfg(state)
@@ -909,7 +922,7 @@ def plan_research(state: ResearchState) -> Dict[str, Any]:
     routed_academic = [q for q in academic_queries if query_routes.get(q, {}).get("use_academic", True)]
     routed_web = list(dict.fromkeys(web_queries + [q for q in academic_queries if query_routes.get(q, {}).get("use_web", False) and q not in web_queries]))
 
-    return {
+    return _ns({
         "research_questions": research_questions,
         "search_queries": all_queries,
         "scope": scope,
@@ -923,7 +936,7 @@ def plan_research(state: ResearchState) -> Dict[str, Any]:
             f"Iteration {iteration}: planned {len(routed_academic)} academic + "
             f"{len(routed_web)} web queries under scoped budget"
         ),
-    }
+    })
 
 
 # Node: fetch_sources
@@ -931,6 +944,7 @@ def plan_research(state: ResearchState) -> Dict[str, Any]:
 
 def fetch_sources(state: ResearchState) -> Dict[str, Any]:
     """Fetch from all enabled sources: arXiv, Semantic Scholar, web."""
+    state = _state_view(state)
     cfg = _get_cfg(state)
     root = Path(cfg.get("_root", "."))
 
@@ -962,13 +976,25 @@ def fetch_sources(state: ResearchState) -> Dict[str, Any]:
 
     new_papers: List[Dict[str, Any]] = []
     new_web: List[Dict[str, Any]] = []
-    provider_result = fetch_candidates(
-        cfg=cfg,
-        root=root,
-        academic_queries=effective_academic_queries,
-        web_queries=effective_web_queries,
-        query_routes=query_routes,
+    search_result = dispatch(
+        TaskRequest(
+            action="search",
+            params={
+                "root": str(root),
+                "academic_queries": effective_academic_queries,
+                "web_queries": effective_web_queries,
+                "query_routes": query_routes,
+            },
+        ),
+        cfg,
     )
+    if not search_result.success:
+        return _ns({
+            "papers": [],
+            "web_sources": [],
+            "status": f"Fetch failed: {search_result.error}",
+        })
+    provider_result = search_result.data
 
     for paper in provider_result.get("papers", []):
         rel_text = f"{paper.get('title', '')} {paper.get('abstract', '')}"
@@ -1002,14 +1028,14 @@ def fetch_sources(state: ResearchState) -> Dict[str, Any]:
         new_web.append(web)
         existing_web_uids.add(uid)
 
-    return {
+    return _ns({
         "papers": new_papers,
         "web_sources": new_web,
         "status": (
             f"Fetched {len(new_papers)} papers (arXiv/Scholar/S2) and {len(new_web)} web sources "
             f"[routes: {len(effective_academic_queries)} academic, {len(effective_web_queries)} web]"
         ),
-    }
+    })
 
 
 # Node: index_sources
@@ -1026,6 +1052,7 @@ def index_sources(state: ResearchState) -> Dict[str, Any]:
     globally (cross-run dedup) and each run's accessible doc_uids are
     recorded in the ``run_docs`` SQLite table.
     """
+    state = _state_view(state)
     cfg = _get_cfg(state)
     root = Path(cfg.get("_root", "."))
     run_id = cfg.get("_run_id", "")
@@ -1042,11 +1069,29 @@ def index_sources(state: ResearchState) -> Dict[str, Any]:
 
     # Ensure run tracking tables exist and record this run (idempotent)
     if run_id:
-        try:
-            init_run_tracking(sqlite_path)
-            upsert_run_session_record(sqlite_path, run_id=run_id, topic=state.get("topic", ""))
-        except Exception as e:
-            logger.warning("run_session upsert failed: %s", e)
+        init_result = dispatch(
+            TaskRequest(
+                action="init_run_tracking",
+                params={"sqlite_path": sqlite_path},
+            ),
+            cfg,
+        )
+        if not init_result.success:
+            logger.warning("run_tracking init failed: %s", init_result.error)
+
+        session_result = dispatch(
+            TaskRequest(
+                action="upsert_run_session_record",
+                params={
+                    "sqlite_path": sqlite_path,
+                    "run_id": run_id,
+                    "topic": state.get("topic", ""),
+                },
+            ),
+            cfg,
+        )
+        if not session_result.success:
+            logger.warning("run_session upsert failed: %s", session_result.error)
 
     new_paper_ids: List[str] = []
     new_web_ids: List[str] = []
@@ -1061,27 +1106,42 @@ def index_sources(state: ResearchState) -> Dict[str, Any]:
     ]
 
     if to_index:
-        pdf_paths = [Path(p["pdf_path"]) for p in to_index]
-        try:
-            result = index_pdf_documents(
-                persist_dir=persist_dir,
-                collection_name=paper_collection,
-                pdfs=pdf_paths,
-                chunk_size=chunk_size,
-                overlap=overlap,
-                run_id=run_id,
-            )
-            new_paper_ids = result.get("indexed_docs", [])
-        except Exception as e:
-            logger.error("PDF indexing failed: %s", e)
+        task_result = dispatch(
+            TaskRequest(
+                action="index_pdf_documents",
+                params={
+                    "persist_dir": persist_dir,
+                    "collection_name": paper_collection,
+                    "pdfs": [p["pdf_path"] for p in to_index],
+                    "chunk_size": chunk_size,
+                    "overlap": overlap,
+                    "run_id": run_id,
+                },
+            ),
+            cfg,
+        )
+        if task_result.success:
+            new_paper_ids = task_result.data.get("indexed_docs", [])
+        else:
+            logger.error("PDF indexing failed: %s", task_result.error)
 
     # Record all submitted paper doc_ids for this run (including cross-run reuses)
     all_submitted_paper_ids = [Path(p["pdf_path"]).stem for p in to_index]
     if run_id and all_submitted_paper_ids:
-        try:
-            upsert_run_doc_records(sqlite_path, run_id=run_id, doc_uids=all_submitted_paper_ids, doc_type="paper")
-        except Exception as e:
-            logger.warning("run_docs upsert (papers) failed: %s", e)
+        run_docs_result = dispatch(
+            TaskRequest(
+                action="upsert_run_doc_records",
+                params={
+                    "sqlite_path": sqlite_path,
+                    "run_id": run_id,
+                    "doc_uids": all_submitted_paper_ids,
+                    "doc_type": "paper",
+                },
+            ),
+            cfg,
+        )
+        if not run_docs_result.success:
+            logger.warning("run_docs upsert (papers) failed: %s", run_docs_result.error)
 
     # Index web content -> web_collection
     already_web = set(state.get("indexed_web_ids", []))
@@ -1096,33 +1156,63 @@ def index_sources(state: ResearchState) -> Dict[str, Any]:
         text = w["body"]
         if len(text.strip()) < 100:
             continue
-        chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
+        chunks_result = dispatch(
+            TaskRequest(
+                action="chunk_text",
+                params={
+                    "text": text,
+                    "chunk_size": chunk_size,
+                    "overlap": overlap,
+                },
+            ),
+            cfg,
+        )
+        if not chunks_result.success:
+            logger.error("Web chunking failed for %s: %s", doc_id, chunks_result.error)
+            continue
+        chunks = chunks_result.data.get("chunks", [])
         if not chunks:
             continue
-        try:
-            build_web_index(
-                persist_dir=persist_dir,
-                collection_name=web_collection,
-                chunks=chunks,
-                doc_id=doc_id,
-                run_id=run_id,
-            )
+        index_result = dispatch(
+            TaskRequest(
+                action="build_web_index",
+                params={
+                    "persist_dir": persist_dir,
+                    "collection_name": web_collection,
+                    "chunks": chunks,
+                    "doc_id": doc_id,
+                    "run_id": run_id,
+                },
+            ),
+            cfg,
+        )
+        if index_result.success:
             new_web_ids.append(doc_id)
-        except Exception as e:
-            logger.error("Web indexing failed for %s: %s", doc_id, e)
+        else:
+            logger.error("Web indexing failed for %s: %s", doc_id, index_result.error)
 
     # Record web doc_ids for this run
     if run_id and new_web_ids:
-        try:
-            upsert_run_doc_records(sqlite_path, run_id=run_id, doc_uids=new_web_ids, doc_type="web")
-        except Exception as e:
-            logger.warning("run_docs upsert (web) failed: %s", e)
+        run_docs_result = dispatch(
+            TaskRequest(
+                action="upsert_run_doc_records",
+                params={
+                    "sqlite_path": sqlite_path,
+                    "run_id": run_id,
+                    "doc_uids": new_web_ids,
+                    "doc_type": "web",
+                },
+            ),
+            cfg,
+        )
+        if not run_docs_result.success:
+            logger.warning("run_docs upsert (web) failed: %s", run_docs_result.error)
 
-    return {
+    return _ns({
         "indexed_paper_ids": new_paper_ids,
         "indexed_web_ids": new_web_ids,
         "status": f"Indexed {len(new_paper_ids)} PDFs -> '{paper_collection}', {len(new_web_ids)} web pages -> '{web_collection}'",
-    }
+    })
 
 
 # Node: analyze_sources
@@ -1134,6 +1224,7 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
     Paper RAG retrieval uses the *paper* collection only, so web
     chunks never leak into paper analysis.
     """
+    state = _state_view(state)
     cfg = _get_cfg(state)
     root = Path(cfg.get("_root", "."))
     model = cfg.get("llm", {}).get("model", "gpt-4.1-mini")
@@ -1170,23 +1261,29 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
         # Try RAG retrieval for indexed papers; restrict to this run's doc_ids
         chunks_text = ""
         if paper.get("pdf_path"):
-            try:
-                run_paper_ids = state.get("indexed_paper_ids") or None
-                hits = retrieve_chunks(
-                    cfg=cfg,
-                    persist_dir=persist_dir,
-                    collection_name=paper_collection,
-                    query=f"{topic} {paper['title']}",
-                    top_k=top_k,
-                    candidate_k=candidate_k,
-                    reranker_model=reranker_model,
-                    allowed_doc_ids=run_paper_ids,
-                )
+            run_paper_ids = state.get("indexed_paper_ids") or None
+            retrieval_result = dispatch(
+                TaskRequest(
+                    action="retrieve_chunks",
+                    params={
+                        "persist_dir": persist_dir,
+                        "collection_name": paper_collection,
+                        "query": f"{topic} {paper['title']}",
+                        "top_k": top_k,
+                        "candidate_k": candidate_k,
+                        "reranker_model": reranker_model,
+                        "allowed_doc_ids": run_paper_ids,
+                    },
+                ),
+                cfg,
+            )
+            if retrieval_result.success:
+                hits = retrieval_result.data.get("hits", [])
                 chunks_text = "\n\n---\n\n".join(
                     f"[Chunk {i+1}] {h['text']}" for i, h in enumerate(hits)
                 )
-            except Exception:
-                pass
+            else:
+                logger.warning("Paper retrieval failed for '%s': %s", paper.get("uid"), retrieval_result.error)
 
         # Fall back to abstract if no chunks
         if not chunks_text:
@@ -1280,11 +1377,11 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
 
     n_papers = len(papers_to_analyze)
     n_web = len(web_to_analyze)
-    return {
+    return _ns({
         "analyses": new_analyses,
         "findings": new_findings,
         "status": f"Analyzed {n_papers} papers + {n_web} web sources, extracted {len(new_findings)} findings",
-    }
+    })
 
 
 # Node: synthesize
@@ -1292,6 +1389,7 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
 
 def synthesize(state: ResearchState) -> Dict[str, Any]:
     """Synthesize all analyses into a coherent understanding."""
+    state = _state_view(state)
     cfg = _get_cfg(state)
     model = cfg.get("llm", {}).get("model", "gpt-4.1-mini")
     temperature = cfg.get("llm", {}).get("temperature", 0.3)
@@ -1368,13 +1466,13 @@ def synthesize(state: ResearchState) -> Dict[str, Any]:
     ]
     merged_gaps = list(dict.fromkeys(result.get("gaps", []) + audit_gaps))
 
-    return {
+    return _ns({
         "synthesis": result.get("synthesis", raw),
         "claim_evidence_map": claim_map,
         "evidence_audit_log": evidence_audit_log,
         "gaps": merged_gaps,
         "status": "Synthesis complete",
-    }
+    })
 
 
 # Node: evaluate_progress
@@ -1382,27 +1480,38 @@ def synthesize(state: ResearchState) -> Dict[str, Any]:
 
 def evaluate_progress(state: ResearchState) -> Dict[str, Any]:
     """Decide whether to continue researching or generate final report."""
+    state = _state_view(state)
     cfg = _get_cfg(state)
     model = cfg.get("llm", {}).get("model", "gpt-4.1-mini")
     temperature = cfg.get("llm", {}).get("temperature", 0.1)
     iteration = state.get("iteration", 0)
     max_iter = state.get("max_iterations", 3)
+    guard = cfg.get("_budget_guard")
+
+    if guard and hasattr(guard, "check"):
+        budget_status = guard.check()
+        if budget_status.get("exceeded"):
+            return _ns({
+                "should_continue": False,
+                "iteration": iteration + 1,
+                "status": f"Budget exceeded: {budget_status.get('reason')}",
+            })
 
     # Force stop at max iterations
     if iteration + 1 >= max_iter:
-        return {
+        return _ns({
             "should_continue": False,
             "iteration": iteration + 1,
             "status": f"Max iterations ({max_iter}) reached, generating report",
-        }
+        })
 
     # No sources at all -> stop
     if not state.get("papers") and not state.get("web_sources"):
-        return {
+        return _ns({
             "should_continue": False,
             "iteration": iteration + 1,
             "status": "No sources found, generating report with available data",
-        }
+        })
 
     num_papers = len(state.get("papers", []))
     num_web = len(state.get("web_sources", []))
@@ -1434,12 +1543,12 @@ def evaluate_progress(state: ResearchState) -> Dict[str, Any]:
             f"Evidence gap in RQ: {x.get('research_question')}" for x in unresolved_audit
         ]))
 
-    return {
+    return _ns({
         "should_continue": should_continue,
         "gaps": result.get("gaps", state.get("gaps", [])),
         "iteration": iteration + 1,
         "status": "Continuing research..." if should_continue else "Evidence sufficient, generating report",
-    }
+    })
 
 
 # Node: generate_report
@@ -1447,6 +1556,7 @@ def evaluate_progress(state: ResearchState) -> Dict[str, Any]:
 
 def generate_report(state: ResearchState) -> Dict[str, Any]:
     """Produce the final markdown research report."""
+    state = _state_view(state)
     cfg = _get_cfg(state)
     model = cfg.get("llm", {}).get("model", "gpt-4.1-mini")
     temperature = cfg.get("llm", {}).get("temperature", 0.3)
@@ -1636,11 +1746,10 @@ def generate_report(state: ResearchState) -> Dict[str, Any]:
         report_critic=critic,
     )
 
-    return {
+    return _ns({
         "report": report,
         "report_critic": critic,
         "repair_attempted": repair_attempted,
         "acceptance_metrics": acceptance_metrics,
         "status": "Research report generated",
-    }
-
+    })

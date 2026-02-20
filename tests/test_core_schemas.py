@@ -13,10 +13,17 @@ class CoreSchemasTest(unittest.TestCase):
     def test_research_state_includes_internal_orchestration_fields(self) -> None:
         ann = schemas.ResearchState.__annotations__
         self.assertIn("_cfg", ann)
-        self.assertIn("_academic_queries", ann)
-        self.assertIn("_web_queries", ann)
         self.assertIn("run_id", ann)
-        self.assertIn("acceptance_metrics", ann)
+        self.assertIn("research", ann)
+        self.assertIn("planning", ann)
+        self.assertIn("evidence", ann)
+        self.assertIn("report", ann)
+
+    def test_namespace_types_present(self) -> None:
+        self.assertTrue(hasattr(schemas, "ResearchNamespace"))
+        self.assertTrue(hasattr(schemas, "PlanningNamespace"))
+        self.assertTrue(hasattr(schemas, "EvidenceNamespace"))
+        self.assertTrue(hasattr(schemas, "ReportNamespace"))
 
     def test_named_schema_types_present(self) -> None:
         self.assertTrue(hasattr(schemas, "PaperRecord"))

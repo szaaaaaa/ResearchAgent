@@ -41,6 +41,17 @@ class NodesHelpersTest(unittest.TestCase):
         self.assertEqual(budget["max_sections"], 2)
         self.assertEqual(budget["max_references"], 8)
 
+    def test_load_budget_and_scope_reads_namespaced_state(self) -> None:
+        state = {
+            "planning": {
+                "scope": {"intent": "custom"},
+                "budget": {"max_sections": 1},
+            }
+        }
+        scope, budget = nodes._load_budget_and_scope(state, {"agent": {"budget": {"max_sections": 9}}})
+        self.assertEqual(scope, {"intent": "custom"})
+        self.assertEqual(budget, {"max_sections": 1})
+
     def test_route_query_for_simple_and_deep_cases(self) -> None:
         simple = nodes._route_query("what is retrieval augmented generation", {"agent": {}})
         self.assertTrue(simple["simple"])

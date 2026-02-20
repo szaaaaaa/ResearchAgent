@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
 from src.common.config_utils import expand_vars, load_yaml
 from src.common.runtime_utils import ensure_dir, now_tag
 from src.agent.core.config import normalize_and_validate_config
+from src.agent.core.state_access import sget
 
 ALL_SOURCES = ("arxiv", "google_scholar", "semantic_scholar", "web")
 
@@ -198,7 +199,7 @@ def main() -> None:
     cfg_snapshot_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
     # Save report
-    report = final_state.get("report", "")
+    report = sget(final_state, "report", "")
     report_path = out_dir / f"research_report_{tag}.md"
     report_path.write_text(report, encoding="utf-8")
     logger.info("Report saved: %s", report_path)
@@ -208,12 +209,12 @@ def main() -> None:
     # Save full state (JSON-serializable subset)
     state_export = {
         "topic": final_state.get("topic"),
-        "research_questions": final_state.get("research_questions", []),
-        "search_queries": final_state.get("search_queries", []),
-        "scope": final_state.get("scope", {}),
-        "budget": final_state.get("budget", {}),
-        "query_routes": final_state.get("query_routes", {}),
-        "memory_summary": final_state.get("memory_summary", ""),
+        "research_questions": sget(final_state, "research_questions", []),
+        "search_queries": sget(final_state, "search_queries", []),
+        "scope": sget(final_state, "scope", {}),
+        "budget": sget(final_state, "budget", {}),
+        "query_routes": sget(final_state, "query_routes", {}),
+        "memory_summary": sget(final_state, "memory_summary", ""),
         "papers": [
             {
                 "uid": p.get("uid"),
@@ -221,7 +222,7 @@ def main() -> None:
                 "authors": p.get("authors", []),
                 "source": p.get("source", "arxiv"),
             }
-            for p in final_state.get("papers", [])
+            for p in sget(final_state, "papers", [])
         ],
         "web_sources": [
             {
@@ -229,18 +230,18 @@ def main() -> None:
                 "title": w.get("title"),
                 "url": w.get("url", ""),
             }
-            for w in final_state.get("web_sources", [])
+            for w in sget(final_state, "web_sources", [])
         ],
-        "analyses": final_state.get("analyses", []),
-        "findings": final_state.get("findings", []),
-        "claim_evidence_map": final_state.get("claim_evidence_map", []),
-        "evidence_audit_log": final_state.get("evidence_audit_log", []),
-        "gaps": final_state.get("gaps", []),
-        "synthesis": final_state.get("synthesis", ""),
-        "report_critic": final_state.get("report_critic", {}),
-        "repair_attempted": final_state.get("repair_attempted", False),
+        "analyses": sget(final_state, "analyses", []),
+        "findings": sget(final_state, "findings", []),
+        "claim_evidence_map": sget(final_state, "claim_evidence_map", []),
+        "evidence_audit_log": sget(final_state, "evidence_audit_log", []),
+        "gaps": sget(final_state, "gaps", []),
+        "synthesis": sget(final_state, "synthesis", ""),
+        "report_critic": sget(final_state, "report_critic", {}),
+        "repair_attempted": sget(final_state, "repair_attempted", False),
         "run_id": final_state.get("run_id", ""),
-        "acceptance_metrics": final_state.get("acceptance_metrics", {}),
+        "acceptance_metrics": sget(final_state, "acceptance_metrics", {}),
         "iterations": final_state.get("iteration", 0),
         "sources_enabled": enabled,
         "timestamp": datetime.now().isoformat(),
@@ -252,11 +253,11 @@ def main() -> None:
     run_state_path.write_text(json.dumps(state_export, ensure_ascii=False, indent=2), encoding="utf-8")
 
     metrics_payload = {
-        "acceptance_metrics": final_state.get("acceptance_metrics", {}),
+        "acceptance_metrics": sget(final_state, "acceptance_metrics", {}),
         "counts": {
-            "papers": len(final_state.get("papers", [])),
-            "web_sources": len(final_state.get("web_sources", [])),
-            "analyses": len(final_state.get("analyses", [])),
+            "papers": len(sget(final_state, "papers", [])),
+            "web_sources": len(sget(final_state, "web_sources", [])),
+            "analyses": len(sget(final_state, "analyses", [])),
             "iterations": int(final_state.get("iteration", 0)),
         },
     }
@@ -264,6 +265,14 @@ def main() -> None:
     metrics_path.write_text(json.dumps(metrics_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     elapsed = time.time() - run_started
+    budget_usage = {}
+    guard = (final_state.get("_cfg") or {}).get("_budget_guard") if isinstance(final_state.get("_cfg"), dict) else None
+    if guard and hasattr(guard, "usage"):
+        try:
+            budget_usage = dict(guard.usage())
+        except Exception:
+            budget_usage = {}
+
     run_meta = {
         "topic": args.topic,
         "run_tag": tag,
@@ -276,6 +285,7 @@ def main() -> None:
         "git_commit_hash": git_commit_hash,
         "sources_enabled": enabled,
         "max_iterations": cfg.get("agent", {}).get("max_iterations", 3),
+        "budget_usage": budget_usage,
         "config_snapshot_path": str(cfg_snapshot_path),
         "report_path": str(run_report_path),
         "state_path": str(run_state_path),
@@ -291,16 +301,16 @@ def main() -> None:
             "event": "run_end",
             "run_id": final_state.get("run_id", ""),
             "iterations": int(final_state.get("iteration", 0)),
-            "papers": len(final_state.get("papers", [])),
-            "web_sources": len(final_state.get("web_sources", [])),
+            "papers": len(sget(final_state, "papers", [])),
+            "web_sources": len(sget(final_state, "web_sources", [])),
             "elapsed_sec": round(elapsed, 3),
         },
     )
 
     # ── Summary ──────────────────────────────────────────────────────
-    n_papers = len(final_state.get("papers", []))
-    n_web = len(final_state.get("web_sources", []))
-    n_analyses = len(final_state.get("analyses", []))
+    n_papers = len(sget(final_state, "papers", []))
+    n_web = len(sget(final_state, "web_sources", []))
+    n_analyses = len(sget(final_state, "analyses", []))
 
     logger.info("=" * 60)
     logger.info("Research complete!")

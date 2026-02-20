@@ -27,4 +27,25 @@ def ensure_plugins_registered() -> None:
     except Exception as exc:  # pragma: no cover - optional dependency path
         logger.warning("Skipping built-in retrieval plugin registration: %s", exc)
 
+    # Import side effects register built-in executors.
+    try:
+        from src.agent.executors import llm_executor  # noqa: F401
+    except Exception as exc:  # pragma: no cover - optional dependency path
+        logger.warning("Skipping built-in LLM executor registration: %s", exc)
+
+    try:
+        from src.agent.executors import search_executor  # noqa: F401
+    except Exception as exc:  # pragma: no cover - optional dependency path
+        logger.warning("Skipping built-in search executor registration: %s", exc)
+
+    try:
+        from src.agent.executors import retrieval_executor  # noqa: F401
+    except Exception as exc:  # pragma: no cover - optional dependency path
+        logger.warning("Skipping built-in retrieval executor registration: %s", exc)
+
+    try:
+        from src.agent.executors import index_executor  # noqa: F401
+    except Exception as exc:  # pragma: no cover - optional dependency path
+        logger.warning("Skipping built-in index executor registration: %s", exc)
+
     _BOOTSTRAPPED = True

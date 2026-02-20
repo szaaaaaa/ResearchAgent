@@ -73,8 +73,13 @@ class GraphRuntimeTest(unittest.TestCase):
         self.assertEqual(state["topic"], "test-topic")
         self.assertEqual(state["max_iterations"], 4)
         self.assertEqual(state["run_id"], "fixed-run-id")
+        self.assertIn("research", state)
+        self.assertIn("planning", state)
+        self.assertIn("evidence", state)
+        self.assertIn("report", state)
         self.assertEqual(state["_cfg"]["_run_id"], "fixed-run-id")
         self.assertEqual(Path(state["_cfg"]["_root"]), Path(".").resolve())
+        self.assertIn("_budget_guard", state["_cfg"])
 
 
 if __name__ == "__main__":

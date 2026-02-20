@@ -22,6 +22,9 @@ DEFAULT_MAX_CONTEXT_CHARS = 3500
 DEFAULT_ANALYSIS_WEB_CONTENT_MAX_CHARS = 15000
 DEFAULT_MIN_KEYWORD_HITS = 1
 DEFAULT_AGENT_SEED = 42
+DEFAULT_BG_MAX_TOKENS = 500_000
+DEFAULT_BG_MAX_API_CALLS = 200
+DEFAULT_BG_MAX_WALL_TIME_SEC = 600
 DEFAULT_TOPIC_BLOCK_TERMS = [
     "hanabi",
     "quantum",
@@ -216,5 +219,10 @@ def normalize_and_validate_config(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
     for source_name in ALL_SOURCES:
         s_cfg = sources_cfg.setdefault(source_name, {})
         s_cfg["enabled"] = _to_bool(s_cfg.get("enabled"), True)
+
+    bg_cfg = out.setdefault("budget_guard", {})
+    bg_cfg["max_tokens"] = int(bg_cfg.get("max_tokens", DEFAULT_BG_MAX_TOKENS))
+    bg_cfg["max_api_calls"] = int(bg_cfg.get("max_api_calls", DEFAULT_BG_MAX_API_CALLS))
+    bg_cfg["max_wall_time_sec"] = float(bg_cfg.get("max_wall_time_sec", DEFAULT_BG_MAX_WALL_TIME_SEC))
 
     return out

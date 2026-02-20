@@ -55,8 +55,58 @@ class SearchFetchResult(TypedDict):
     web_sources: List[WebResult]
 
 
+class ResearchNamespace(TypedDict, total=False):
+    papers: List[PaperRecord]
+    indexed_paper_ids: List[str]
+    web_sources: List[WebResult]
+    indexed_web_ids: List[str]
+    analyses: List[AnalysisResult]
+    findings: List[str]
+    synthesis: str
+    memory_summary: str
+
+
+class PlanningNamespace(TypedDict, total=False):
+    research_questions: List[str]
+    search_queries: List[str]
+    query_routes: Dict[str, Dict[str, Any]]
+    scope: Dict[str, Any]
+    budget: Dict[str, int]
+    _academic_queries: List[str]
+    _web_queries: List[str]
+
+
+class EvidenceNamespace(TypedDict, total=False):
+    claim_evidence_map: List[Dict[str, Any]]
+    evidence_audit_log: List[Dict[str, Any]]
+    gaps: List[str]
+
+
+class ReportNamespace(TypedDict, total=False):
+    report: str
+    report_critic: Dict[str, Any]
+    repair_attempted: bool
+    acceptance_metrics: RunMetrics
+
+
 class ResearchState(TypedDict, total=False):
     topic: str
+    status: str
+    run_id: str
+    iteration: int
+    max_iterations: int
+    should_continue: bool
+    error: str | None
+
+    research: ResearchNamespace
+    planning: PlanningNamespace
+    evidence: EvidenceNamespace
+    report: ReportNamespace
+
+    # Internal/runtime fields used by node orchestration.
+    _cfg: Dict[str, Any]
+
+    # Legacy flat fields retained during migration for compatibility.
     research_questions: List[str]
     search_queries: List[str]
     scope: Dict[str, Any]
@@ -73,17 +123,8 @@ class ResearchState(TypedDict, total=False):
     claim_evidence_map: List[Dict[str, Any]]
     evidence_audit_log: List[Dict[str, Any]]
     synthesis: str
-    report: str
-    iteration: int
-    max_iterations: int
-    should_continue: bool
-    status: str
-    error: str | None
     report_critic: Dict[str, Any]
     repair_attempted: bool
-    run_id: str
     acceptance_metrics: RunMetrics
-    # Internal/runtime fields used by node orchestration.
-    _cfg: Dict[str, Any]
     _academic_queries: List[str]
     _web_queries: List[str]

@@ -43,9 +43,11 @@ from typing import Any, Dict
 
 from langgraph.graph import END, StateGraph
 
+from src.agent.core.budget import BudgetGuard
 from src.agent.core.config import normalize_and_validate_config
 from src.agent.core.events import instrument_node
 from src.agent.core.schemas import ResearchState
+from src.agent.core.state_access import sget
 from src.agent.nodes import (
     analyze_sources,
     evaluate_progress,
@@ -61,7 +63,7 @@ logger = logging.getLogger(__name__)
 
 def _route_after_evaluate(state: ResearchState) -> str:
     """Conditional edge: loop back or finish."""
-    if state.get("should_continue", False):
+    if bool(sget(state, "should_continue", False)):
         return "plan_research"
     return "generate_report"
 
@@ -126,6 +128,12 @@ def run_research(
     cfg = normalize_and_validate_config(cfg)
     root = Path(root).resolve()
     max_iterations = cfg.get("agent", {}).get("max_iterations", 3)
+    bg_cfg = cfg.get("budget_guard", {})
+    guard = BudgetGuard(
+        max_tokens=int(bg_cfg.get("max_tokens", 500_000)),
+        max_api_calls=int(bg_cfg.get("max_api_calls", 200)),
+        max_wall_time_sec=float(bg_cfg.get("max_wall_time_sec", 600)),
+    )
 
     # Generate a unique run ID for cross-run isolation and tracking
     run_id = str(uuid.uuid4())
@@ -133,35 +141,46 @@ def run_research(
     # Inject config and root into state so nodes can access them
     cfg["_root"] = str(root)
     cfg["_run_id"] = run_id
+    cfg["_budget_guard"] = guard
 
     initial_state: ResearchState = {
         "topic": topic,
-        "research_questions": [],
-        "search_queries": [],
-        "scope": {},
-        "budget": {},
-        "query_routes": {},
-        "memory_summary": "",
-        "papers": [],
-        "indexed_paper_ids": [],
-        "web_sources": [],
-        "indexed_web_ids": [],
-        "analyses": [],
-        "findings": [],
-        "gaps": [],
-        "claim_evidence_map": [],
-        "evidence_audit_log": [],
-        "synthesis": "",
-        "report": "",
-        "report_critic": {},
-        "repair_attempted": False,
+        "planning": {
+            "research_questions": [],
+            "search_queries": [],
+            "scope": {},
+            "budget": {},
+            "query_routes": {},
+            "_academic_queries": [],
+            "_web_queries": [],
+        },
+        "research": {
+            "memory_summary": "",
+            "papers": [],
+            "indexed_paper_ids": [],
+            "web_sources": [],
+            "indexed_web_ids": [],
+            "analyses": [],
+            "findings": [],
+            "synthesis": "",
+        },
+        "evidence": {
+            "gaps": [],
+            "claim_evidence_map": [],
+            "evidence_audit_log": [],
+        },
+        "report": {
+            "report": "",
+            "report_critic": {},
+            "repair_attempted": False,
+            "acceptance_metrics": {},
+        },
         "iteration": 0,
         "max_iterations": max_iterations,
         "should_continue": False,
         "status": "Starting research",
         "error": None,
         "run_id": run_id,
-        "acceptance_metrics": {},
         "_cfg": cfg,
     }
 

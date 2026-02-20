@@ -8,6 +8,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Dict
 
+from src.agent.core.state_access import sget
+
 logger = logging.getLogger(__name__)
 _WRITE_LOCK = Lock()
 
@@ -69,7 +71,7 @@ def instrument_node(name: str, fn: Callable[[Dict[str, Any]], Dict[str, Any]]) -
 
         counts: Dict[str, int] = {}
         for k in ("papers", "web_sources", "analyses", "findings", "search_queries", "research_questions"):
-            v = out.get(k)
+            v = sget(out, k)
             if isinstance(v, list):
                 counts[f"{k}_count"] = len(v)
         emit_event(

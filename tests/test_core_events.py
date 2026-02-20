@@ -48,6 +48,28 @@ class CoreEventsTest(unittest.TestCase):
             if events_path.exists():
                 events_path.unlink()
 
+    def test_instrument_node_counts_namespaced_outputs(self) -> None:
+        events_path = Path(f".events_test_{uuid.uuid4().hex}.log")
+        try:
+            def _node(state):
+                return {
+                    "status": "ok",
+                    "research": {"papers": [{"uid": "p1"}], "web_sources": [{"uid": "w1"}]},
+                    "planning": {"search_queries": ["q1"]},
+                }
+
+            wrapped = instrument_node("dummy_ns_node", _node)
+            wrapped({"run_id": "r1", "iteration": 1, "_cfg": {"_events_file": str(events_path)}})
+
+            lines = [json.loads(x) for x in events_path.read_text(encoding="utf-8").splitlines() if x.strip()]
+            self.assertEqual(lines[1]["event"], "node_end")
+            self.assertEqual(lines[1]["papers_count"], 1)
+            self.assertEqual(lines[1]["web_sources_count"], 1)
+            self.assertEqual(lines[1]["search_queries_count"], 1)
+        finally:
+            if events_path.exists():
+                events_path.unlink()
+
 
 if __name__ == "__main__":
     unittest.main()

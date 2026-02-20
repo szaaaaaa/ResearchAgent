@@ -4,6 +4,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
+from src.agent.core.budget import BudgetGuard
 from src.agent.core import factories
 from src.agent.providers import llm_provider, retrieval_provider, search_provider
 
@@ -76,6 +77,18 @@ class FactoriesAndProvidersTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 llm_provider.call_llm(system_prompt="s", user_prompt="u", cfg=cfg)
         self.assertEqual(backend.generate.call_count, 3)
+
+    def test_call_llm_records_budget_usage_when_guard_present(self) -> None:
+        backend = Mock()
+        backend.generate.return_value = "hello world"
+        guard = BudgetGuard(max_tokens=1000, max_api_calls=100, max_wall_time_sec=600)
+        cfg = {"providers": {"llm": {"backend": "dummy"}}, "_budget_guard": guard}
+        with patch("src.agent.providers.llm_provider.create_llm_backend", return_value=backend):
+            out = llm_provider.call_llm(system_prompt="sys", user_prompt="usr", cfg=cfg)
+        self.assertEqual(out, "hello world")
+        usage = guard.usage()
+        self.assertEqual(usage["api_calls"], 1)
+        self.assertGreater(usage["tokens_used"], 0)
 
     def test_fetch_candidates_delegates_to_selected_backend(self) -> None:
         backend = Mock()

@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.agent.core.config import normalize_and_validate_config
+from src.agent.core.state_access import sget
 from src.agent.plugins.registry import (
     register_llm_backend,
     register_retriever_backend,
@@ -218,27 +219,43 @@ def _import_run_research():
                 def invoke(self, state):
                     cur = graph._entry
                     st = dict(state)
+                    append_fields = {
+                        "papers",
+                        "indexed_paper_ids",
+                        "web_sources",
+                        "indexed_web_ids",
+                        "analyses",
+                        "findings",
+                    }
+
+                    def _merge_state(dst, src):
+                        for k, v in src.items():
+                            if isinstance(v, dict) and isinstance(dst.get(k), dict):
+                                merged = dict(dst.get(k, {}))
+                                for sub_k, sub_v in v.items():
+                                    if (
+                                        isinstance(sub_v, list)
+                                        and isinstance(merged.get(sub_k), list)
+                                        and sub_k in append_fields
+                                    ):
+                                        merged[sub_k] = merged[sub_k] + sub_v
+                                    else:
+                                        merged[sub_k] = sub_v
+                                dst[k] = merged
+                            elif (
+                                isinstance(v, list)
+                                and isinstance(dst.get(k), list)
+                                and k in append_fields
+                            ):
+                                dst[k] = dst.get(k, []) + v
+                            else:
+                                dst[k] = v
+
                     steps = 0
                     while cur and cur != end_token:
                         update = graph._nodes[cur](st)
                         if isinstance(update, dict):
-                            for k, v in update.items():
-                                # Approximate LangGraph list-append semantics for accumulated fields.
-                                if (
-                                    isinstance(v, list)
-                                    and isinstance(st.get(k), list)
-                                    and k in {
-                                        "papers",
-                                        "indexed_paper_ids",
-                                        "web_sources",
-                                        "indexed_web_ids",
-                                        "analyses",
-                                        "findings",
-                                    }
-                                ):
-                                    st[k] = st.get(k, []) + v
-                                else:
-                                    st[k] = v
+                            _merge_state(st, update)
 
                         if cur in graph._conditional:
                             router, mapping = graph._conditional[cur]
@@ -288,7 +305,7 @@ def main() -> int:
     final_state = run_research(topic=topic, cfg=cfg, root=ROOT)
     elapsed = time.time() - started
 
-    report = str(final_state.get("report", "")).strip()
+    report = str(sget(final_state, "report", "")).strip()
     if not report:
         raise RuntimeError("Smoke test failed: empty report")
     if elapsed > 30:
@@ -297,7 +314,7 @@ def main() -> int:
     print("[OK] smoke test passed")
     print(f"elapsed_sec={elapsed:.2f}")
     print(f"iterations={final_state.get('iteration', 0)}")
-    print(f"papers={len(final_state.get('papers', []))} web={len(final_state.get('web_sources', []))}")
+    print(f"papers={len(sget(final_state, 'papers', []))} web={len(sget(final_state, 'web_sources', []))}")
     return 0
 
 

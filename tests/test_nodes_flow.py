@@ -4,9 +4,19 @@ import unittest
 from unittest.mock import patch
 
 from src.agent import nodes
+from src.agent.core.executor import TaskResult
+from src.agent.core.state_access import sget
 
 
 class NodesFlowTest(unittest.TestCase):
+    class _Guard:
+        def check(self):
+            return {
+                "exceeded": True,
+                "reason": "Token budget exhausted: 100/100",
+                "usage": {"tokens_used": 100, "api_calls": 10, "elapsed_sec": 1.0},
+            }
+
     def test_plan_research_fallback_when_json_invalid(self) -> None:
         state = {
             "topic": "retrieval augmented generation benchmark",
@@ -16,11 +26,12 @@ class NodesFlowTest(unittest.TestCase):
         with patch("src.agent.nodes._llm_call", return_value="not-json"):
             out = nodes.plan_research(state)
 
-        self.assertEqual(len(out["research_questions"]), 1)
-        self.assertIn("retrieval augmented generation benchmark", out["research_questions"][0].lower())
-        self.assertTrue(out["_academic_queries"])
-        self.assertTrue(out["_web_queries"])
-        self.assertIn("query_routes", out)
+        rqs = sget(out, "research_questions", [])
+        self.assertEqual(len(rqs), 1)
+        self.assertIn("retrieval augmented generation benchmark", rqs[0].lower())
+        self.assertTrue(sget(out, "_academic_queries", []))
+        self.assertTrue(sget(out, "_web_queries", []))
+        self.assertTrue(isinstance(sget(out, "query_routes", {}), dict))
 
     def test_plan_research_applies_limits_and_dynamic_routes(self) -> None:
         state = {
@@ -42,10 +53,10 @@ class NodesFlowTest(unittest.TestCase):
         with patch("src.agent.nodes._llm_call", return_value=llm_json):
             out = nodes.plan_research(state)
 
-        self.assertEqual(out["research_questions"], ["q1"])
-        self.assertEqual(out["search_queries"], ["what is rag", "rag benchmark", "extra"])
-        self.assertEqual(out["_academic_queries"], ["rag benchmark"])
-        self.assertEqual(out["_web_queries"], ["what is rag", "extra", "rag benchmark"])
+        self.assertEqual(sget(out, "research_questions", []), ["q1"])
+        self.assertEqual(sget(out, "search_queries", []), ["what is rag", "rag benchmark", "extra"])
+        self.assertEqual(sget(out, "_academic_queries", []), ["rag benchmark"])
+        self.assertEqual(sget(out, "_web_queries", []), ["what is rag", "extra", "rag benchmark"])
 
     def test_fetch_sources_filters_by_topic_and_dedupes(self) -> None:
         state = {
@@ -75,20 +86,57 @@ class NodesFlowTest(unittest.TestCase):
                 {"uid": "w-off", "title": "football news", "snippet": "sports"},
             ],
         }
-        with patch("src.agent.nodes.fetch_candidates", return_value=provider_result) as fetch_mock:
+        with patch(
+            "src.agent.nodes.dispatch",
+            return_value=TaskResult(success=True, data=provider_result),
+        ) as dispatch_mock:
             out = nodes.fetch_sources(state)
 
-        self.assertEqual([p["uid"] for p in out["papers"]], ["p-new"])
-        self.assertEqual([w["uid"] for w in out["web_sources"]], ["w-new"])
-        kwargs = fetch_mock.call_args.kwargs
-        self.assertEqual(kwargs["academic_queries"], ["qa"])
-        self.assertEqual(kwargs["web_queries"], ["qw", "qa", "qb"])
+        self.assertEqual([p["uid"] for p in sget(out, "papers", [])], ["p-new"])
+        self.assertEqual([w["uid"] for w in sget(out, "web_sources", [])], ["w-new"])
+        task = dispatch_mock.call_args.args[0]
+        self.assertEqual(task.params["academic_queries"], ["qa"])
+        self.assertEqual(task.params["web_queries"], ["qw", "qa", "qb"])
+
+    def test_fetch_sources_returns_failure_status_when_dispatch_fails(self) -> None:
+        state = {
+            "topic": "retrieval augmented generation",
+            "search_queries": ["rag retrieval"],
+            "_academic_queries": ["qa"],
+            "_web_queries": ["qw"],
+            "query_routes": {},
+            "papers": [],
+            "web_sources": [],
+            "_cfg": {},
+        }
+        with patch(
+            "src.agent.nodes.dispatch",
+            return_value=TaskResult(success=False, error="backend down"),
+        ):
+            out = nodes.fetch_sources(state)
+
+        self.assertEqual(sget(out, "papers", []), [])
+        self.assertEqual(sget(out, "web_sources", []), [])
+        self.assertIn("Fetch failed: backend down", out["status"])
 
     def test_evaluate_progress_stops_at_max_iterations(self) -> None:
         state = {"iteration": 2, "max_iterations": 3, "_cfg": {}, "topic": "x"}
         out = nodes.evaluate_progress(state)
         self.assertFalse(out["should_continue"])
         self.assertIn("Max iterations", out["status"])
+
+    def test_evaluate_progress_stops_when_budget_exceeded(self) -> None:
+        state = {
+            "iteration": 0,
+            "max_iterations": 3,
+            "_cfg": {"_budget_guard": self._Guard()},
+            "topic": "x",
+            "papers": [{"uid": "p1"}],
+            "web_sources": [],
+        }
+        out = nodes.evaluate_progress(state)
+        self.assertFalse(out["should_continue"])
+        self.assertIn("Budget exceeded", out["status"])
 
     def test_evaluate_progress_stops_when_no_sources(self) -> None:
         state = {"iteration": 0, "max_iterations": 3, "_cfg": {}, "topic": "x", "papers": [], "web_sources": []}
@@ -113,7 +161,7 @@ class NodesFlowTest(unittest.TestCase):
             out = nodes.evaluate_progress(state)
 
         self.assertTrue(out["should_continue"])
-        self.assertTrue(any("Evidence gap in RQ: rq1" in g for g in out["gaps"]))
+        self.assertTrue(any("Evidence gap in RQ: rq1" in g for g in sget(out, "gaps", [])))
 
 
 if __name__ == "__main__":

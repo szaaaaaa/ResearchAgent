@@ -20,6 +20,10 @@ class CoreConfigTest(unittest.TestCase):
         self.assertIn("seed", out["agent"])
         self.assertIn("topic_filter", out["agent"])
         self.assertIn("block_terms", out["agent"]["topic_filter"])
+        self.assertIn("budget_guard", out)
+        self.assertIn("max_tokens", out["budget_guard"])
+        self.assertIn("max_api_calls", out["budget_guard"])
+        self.assertIn("max_wall_time_sec", out["budget_guard"])
 
     def test_normalize_bool_and_order(self) -> None:
         out = normalize_and_validate_config(
@@ -53,6 +57,14 @@ class CoreConfigTest(unittest.TestCase):
             normalize_and_validate_config({"providers": {"search": {"backend": ""}}})
         with self.assertRaises(ValueError):
             normalize_and_validate_config({"providers": {"retrieval": {"backend": " "}}})
+
+    def test_budget_guard_normalized_from_strings(self) -> None:
+        out = normalize_and_validate_config(
+            {"budget_guard": {"max_tokens": "1234", "max_api_calls": "56", "max_wall_time_sec": "7.5"}}
+        )
+        self.assertEqual(out["budget_guard"]["max_tokens"], 1234)
+        self.assertEqual(out["budget_guard"]["max_api_calls"], 56)
+        self.assertAlmostEqual(out["budget_guard"]["max_wall_time_sec"], 7.5, places=6)
 
 
 if __name__ == "__main__":
