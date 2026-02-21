@@ -26,6 +26,7 @@ DEFAULT_MAX_SECTIONS = 5
 DEFAULT_MAX_REFERENCES = 20
 DEFAULT_CORE_MIN_A_RATIO = 0.7
 DEFAULT_BACKGROUND_MAX_C = 3
+DEFAULT_MAX_PER_VENUE = 2
 DEFAULT_MAX_FINDINGS_FOR_CONTEXT = 20
 DEFAULT_MAX_CONTEXT_CHARS = 3500
 DEFAULT_ANALYSIS_WEB_CONTENT_MAX_CHARS = 15000
@@ -74,6 +75,9 @@ DEFAULT_DEEP_QUERY_TERMS = [
     "theorem",
     "proof",
 ]
+DEFAULT_REWRITE_MIN_PER_RQ = 6
+DEFAULT_REWRITE_MAX_PER_RQ = 8
+DEFAULT_REWRITE_MAX_TOTAL_QUERIES = 24
 
 
 def _to_bool(value: Any, default: bool) -> bool:
@@ -178,6 +182,9 @@ def normalize_and_validate_config(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
     source_rank_cfg["background_max_c"] = int(
         source_rank_cfg.get("background_max_c", DEFAULT_BACKGROUND_MAX_C)
     )
+    source_rank_cfg["max_per_venue"] = int(
+        source_rank_cfg.get("max_per_venue", DEFAULT_MAX_PER_VENUE)
+    )
 
     memory_cfg = agent_cfg.setdefault("memory", {})
     memory_cfg["max_findings_for_context"] = int(
@@ -210,6 +217,16 @@ def normalize_and_validate_config(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
     dyn_cfg["deep_query_terms"] = _normalized_order(
         dyn_cfg.get("deep_query_terms"),
         DEFAULT_DEEP_QUERY_TERMS,
+    )
+    rewrite_cfg = agent_cfg.setdefault("query_rewrite", {})
+    rewrite_cfg["min_per_rq"] = int(
+        rewrite_cfg.get("min_per_rq", DEFAULT_REWRITE_MIN_PER_RQ)
+    )
+    rewrite_cfg["max_per_rq"] = int(
+        rewrite_cfg.get("max_per_rq", DEFAULT_REWRITE_MAX_PER_RQ)
+    )
+    rewrite_cfg["max_total_queries"] = int(
+        rewrite_cfg.get("max_total_queries", DEFAULT_REWRITE_MAX_TOTAL_QUERIES)
     )
     topic_filter_cfg = agent_cfg.setdefault("topic_filter", {})
     topic_filter_cfg["min_keyword_hits"] = int(

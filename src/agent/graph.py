@@ -178,6 +178,7 @@ def run_research(
         "iteration": 0,
         "max_iterations": max_iterations,
         "should_continue": False,
+        "_focus_research_questions": [],
         "status": "Starting research",
         "error": None,
         "run_id": run_id,

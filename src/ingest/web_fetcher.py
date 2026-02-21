@@ -64,6 +64,13 @@ class WebResult:
     year: Optional[int] = None
     pdf_url: Optional[str] = None
     pdf_path: Optional[str] = None
+    doi: str = ""
+    arxiv_id: str = ""
+    venue: str = ""
+    journal: str = ""
+    citation_count: int = 0
+    peer_reviewed: bool = False
+    source_origins: List[str] = field(default_factory=list)
 
 
 def _contains_cjk(text: str) -> bool:
@@ -387,7 +394,11 @@ def search_openalex(
             params={
                 "search": query,
                 "per-page": min(max_results, 200),
-                "select": "id,doi,title,display_name,publication_year,abstract_inverted_index,authorships,primary_location,ids",
+                "select": (
+                    "id,doi,title,display_name,publication_year,abstract_inverted_index,"
+                    "authorships,primary_location,best_oa_location,ids,cited_by_count,"
+                    "host_venue,type"
+                ),
             },
             headers=_HEADERS,
             timeout=30,
@@ -402,10 +413,23 @@ def search_openalex(
         title = row.get("display_name") or row.get("title") or ""
         ids = row.get("ids") or {}
         doi_url = ids.get("doi") or row.get("doi") or ""
+        arxiv_url = ids.get("arxiv") or ""
         openalex_id = row.get("id", "")
-        uid = ""
+        doi = ""
         if isinstance(doi_url, str) and doi_url:
-            uid = f"doi:{doi_url.replace('https://doi.org/', '').replace('http://doi.org/', '')}"
+            doi = (
+                doi_url.replace("https://doi.org/", "")
+                .replace("http://doi.org/", "")
+                .strip()
+            )
+        arxiv_id = ""
+        if isinstance(arxiv_url, str) and arxiv_url:
+            arxiv_id = arxiv_url.rsplit("/", 1)[-1].strip()
+        uid = ""
+        if doi:
+            uid = f"doi:{doi.lower()}"
+        elif arxiv_id:
+            uid = f"arxiv:{arxiv_id.lower()}"
         elif isinstance(openalex_id, str) and openalex_id:
             uid = f"openalex:{openalex_id.rsplit('/', 1)[-1]}"
         else:
@@ -418,8 +442,28 @@ def search_openalex(
                 authors.append(nm)
 
         url = ""
+        pdf_url = ""
+        venue = ""
+        journal = ""
+        peer_reviewed = False
         primary = row.get("primary_location") or {}
+        best_oa = row.get("best_oa_location") or {}
+        host_venue = row.get("host_venue") or {}
         landing = primary.get("landing_page_url")
+        primary_source = primary.get("source") or {}
+        venue = (
+            (host_venue.get("display_name") or "").strip()
+            or (primary_source.get("display_name") or "").strip()
+        )
+        source_type = (primary_source.get("type") or "").strip().lower()
+        if source_type in {"journal", "conference"}:
+            peer_reviewed = True
+        if source_type == "journal":
+            journal = venue
+        pdf_url = (
+            (best_oa.get("pdf_url") or "")
+            or (primary.get("pdf_url") or "")
+        )
         if isinstance(landing, str) and landing:
             url = landing
         elif isinstance(doi_url, str) and doi_url:
@@ -436,6 +480,14 @@ def search_openalex(
                 source="openalex",
                 authors=authors,
                 year=row.get("publication_year"),
+                pdf_url=pdf_url or None,
+                doi=doi.lower(),
+                arxiv_id=arxiv_id.lower(),
+                venue=venue,
+                journal=journal,
+                citation_count=int(row.get("cited_by_count") or 0),
+                peer_reviewed=peer_reviewed,
+                source_origins=["openalex"],
             )
         )
         if len(results) >= max_results:
@@ -455,7 +507,10 @@ def search_semantic_scholar(
             params={
                 "query": query,
                 "limit": min(max_results, 100),
-                "fields": "title,authors,year,abstract,externalIds,url,openAccessPdf",
+                "fields": (
+                    "title,authors,year,abstract,externalIds,url,openAccessPdf,"
+                    "citationCount,venue,journal,publicationTypes"
+                ),
             },
             headers=_HEADERS,
             timeout=30,
@@ -482,6 +537,13 @@ def search_semantic_scholar(
         authors = [a.get("name", "") for a in (paper.get("authors") or [])]
         pdf_info = paper.get("openAccessPdf") or {}
         pdf_url = pdf_info.get("url")
+        venue = (paper.get("venue") or "").strip()
+        journal_info = paper.get("journal") or {}
+        journal = (journal_info.get("name") or "").strip()
+        pub_types = [str(x).lower() for x in (paper.get("publicationTypes") or []) if x]
+        peer_reviewed = bool(journal or venue) and any(
+            t in {"journalarticle", "conference", "conferencepaper"} for t in pub_types
+        )
 
         results.append(
             WebResult(
@@ -493,6 +555,13 @@ def search_semantic_scholar(
                 authors=authors,
                 year=paper.get("year"),
                 pdf_url=pdf_url,
+                doi=str(doi or "").lower(),
+                arxiv_id=str(arxiv_id or "").lower(),
+                venue=venue,
+                journal=journal,
+                citation_count=int(paper.get("citationCount") or 0),
+                peer_reviewed=peer_reviewed,
+                source_origins=["semantic_scholar"],
             )
         )
     return results

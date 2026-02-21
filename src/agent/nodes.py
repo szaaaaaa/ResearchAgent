@@ -85,6 +85,21 @@ _ENGINEERING_DOMAINS = {
 }
 _SIMPLE_QUERY_TERMS = set(DEFAULT_SIMPLE_QUERY_TERMS)
 _DEEP_QUERY_TERMS = set(DEFAULT_DEEP_QUERY_TERMS)
+_ACRONYM_EXPANSIONS = {
+    "rag": "retrieval augmented generation",
+    "llm": "large language model",
+    "qa": "question answering",
+    "nlp": "natural language processing",
+    "ab": "a b",
+}
+_SYNONYM_HINTS = {
+    "latency": "response time",
+    "cost": "efficiency",
+    "evaluation": "benchmark",
+    "security": "safety",
+    "robustness": "reliability",
+    "retrieval": "search",
+}
 
 # Helpers
 
@@ -143,6 +158,20 @@ def _ns(update: Dict[str, Any]) -> Dict[str, Any]:
 def _source_enabled(cfg: Dict[str, Any], source_name: str) -> bool:
     """Check if a specific source is enabled in config."""
     return cfg.get("sources", {}).get(source_name, {}).get("enabled", True)
+
+
+def _academic_sources_enabled(cfg: Dict[str, Any]) -> bool:
+    """Whether any academic search source is enabled in config."""
+    return any(
+        _source_enabled(cfg, name)
+        for name in ("arxiv", "openalex", "google_scholar", "semantic_scholar")
+    )
+
+
+def _web_sources_enabled(cfg: Dict[str, Any]) -> bool:
+    """Whether web search is enabled in config."""
+    # default_search gates all web fetches on sources.web.enabled.
+    return _source_enabled(cfg, "web")
 
 
 def _infer_intent(topic: str) -> str:
@@ -238,6 +267,100 @@ def _compress_findings_for_context(
     return "\n".join(out) if out else "(none yet)"
 
 
+def _expand_acronyms(text: str) -> str:
+    words = re.findall(r"[a-z0-9]+|[^a-z0-9]+", (text or "").lower())
+    out: List[str] = []
+    for w in words:
+        key = w.strip()
+        if key in _ACRONYM_EXPANSIONS:
+            out.append(_ACRONYM_EXPANSIONS[key])
+        else:
+            out.append(w)
+    return "".join(out).strip()
+
+
+def _with_synonym_hints(text: str) -> str:
+    s = (text or "").strip()
+    for k, v in _SYNONYM_HINTS.items():
+        if re.search(rf"\b{re.escape(k)}\b", s, flags=re.IGNORECASE):
+            s = re.sub(rf"\b{re.escape(k)}\b", f"{k} {v}", s, count=1, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _rewrite_queries_for_rq(
+    *,
+    rq: str,
+    topic: str,
+    year: int,
+    max_per_rq: int,
+) -> List[Dict[str, str]]:
+    base = re.sub(r"\s+", " ", (rq or topic or "").strip())
+    if not base:
+        return []
+    expanded = _expand_acronyms(base)
+    synonymized = _with_synonym_hints(expanded)
+    recent_years = f"{year-2} {year-1} {year}"
+    classic_years = "2018 2019 2020"
+    candidates: List[Dict[str, str]] = [
+        {"query": base, "type": "precision"},
+        {"query": f"\"{base}\"", "type": "precision"},
+        {"query": expanded, "type": "precision"},
+        {"query": f"{expanded} {recent_years}", "type": "precision"},
+        {"query": f"{synonymized} benchmark evaluation ablation", "type": "recall"},
+        {"query": f"{synonymized} survey systematic review", "type": "recall"},
+        {"query": f"{synonymized} production case study", "type": "recall"},
+        {"query": f"{synonymized} seminal classic baseline {classic_years}", "type": "recall"},
+        {"query": f"{topic} {base} architecture framework", "type": "recall"},
+        {"query": f"{topic} {base} failure modes trade offs", "type": "recall"},
+    ]
+    out: List[Dict[str, str]] = []
+    seen = set()
+    for c in candidates:
+        q = re.sub(r"\s+", " ", c["query"]).strip()
+        if not q:
+            continue
+        k = q.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append({"query": q, "type": c["type"]})
+        if len(out) >= max(1, int(max_per_rq)):
+            break
+    return out
+
+
+def _expand_query_set(
+    *,
+    topic: str,
+    rq_list: List[str],
+    seed_queries: List[str],
+    max_per_rq: int,
+    max_total: int,
+) -> List[Dict[str, str]]:
+    year = datetime.now().year
+    out: List[Dict[str, str]] = []
+    seen = set()
+
+    def _add(q: str, qtype: str) -> None:
+        qq = re.sub(r"\s+", " ", (q or "").strip())
+        if not qq:
+            return
+        k = qq.lower()
+        if k in seen:
+            return
+        seen.add(k)
+        out.append({"query": qq, "type": qtype})
+
+    for q in seed_queries:
+        _add(q, "precision")
+
+    for rq in rq_list:
+        for item in _rewrite_queries_for_rq(rq=rq, topic=topic, year=year, max_per_rq=max_per_rq):
+            _add(item["query"], item["type"])
+
+    return out[: max(1, int(max_total))]
+
+
 def _is_simple_query(query: str) -> bool:
     return _is_simple_query_with_cfg(query, {})
 
@@ -257,8 +380,12 @@ def _is_simple_query_with_cfg(query: str, cfg: Dict[str, Any]) -> bool:
 def _route_query(query: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
     dyn_cfg = cfg.get("agent", {}).get("dynamic_retrieval", {})
     simple = _is_simple_query_with_cfg(query, cfg)
-    use_academic = (not simple) or bool(dyn_cfg.get("simple_query_academic", False))
-    use_web = True
+    academic_enabled = _academic_sources_enabled(cfg)
+    web_enabled = _web_sources_enabled(cfg)
+    use_academic = academic_enabled and (
+        (not simple) or bool(dyn_cfg.get("simple_query_academic", False))
+    )
+    use_web = web_enabled
     download_pdf = use_academic and ((not simple) or bool(dyn_cfg.get("simple_query_pdf", False)))
     return {
         "simple": simple,
@@ -405,16 +532,69 @@ def _build_claim_evidence_map(
             )
             continue
 
-        ab = [a for a in ranked if _source_tier(a) in {"A", "B"}]
-        selected = ab[:3]
-        if len(selected) < 2:
-            for cand in ranked:
-                if cand in selected:
-                    continue
-                selected.append(cand)
-                if len(selected) >= 3:
-                    break
+        def _is_peer_reviewed(a: Dict[str, Any]) -> bool:
+            if bool(a.get("peer_reviewed", False)):
+                return True
+            venue = str(a.get("venue") or a.get("journal") or "").strip()
+            src = str(a.get("source") or "").lower()
+            if venue and src not in {"arxiv", "web"}:
+                return True
+            return False
 
+        def _is_arxiv_only(a: Dict[str, Any]) -> bool:
+            return str(a.get("source") or "").lower() == "arxiv" and not _is_peer_reviewed(a)
+
+        def _is_high_quality(a: Dict[str, Any]) -> bool:
+            tier = _source_tier(a)
+            rel = float(a.get("relevance_score", 0.0) or 0.0)
+            return _has_traceable_source(a) and tier in {"A", "B"} and rel >= 0.30
+
+        hq_ranked = [a for a in ranked if _is_high_quality(a)]
+        peer_ranked = [a for a in hq_ranked if _is_peer_reviewed(a)]
+        arxiv_only_ranked = [a for a in hq_ranked if _is_arxiv_only(a)]
+
+        selected: List[Dict[str, Any]] = []
+        selected_keys: set[str] = set()
+
+        def _pick(cand: Dict[str, Any]) -> bool:
+            k = _source_dedupe_key(cand)
+            if k in selected_keys:
+                return False
+            if _is_arxiv_only(cand):
+                arxiv_only_cnt = sum(1 for x in selected if _is_arxiv_only(x))
+                if arxiv_only_cnt >= 1:
+                    return False
+            selected.append(cand)
+            selected_keys.add(k)
+            return True
+
+        # Priority 1: at least two peer-reviewed evidences if possible.
+        for cand in peer_ranked:
+            _pick(cand)
+            if len(selected) >= 2:
+                break
+
+        # Priority 2: at most one arXiv-only supplemental evidence.
+        for cand in arxiv_only_ranked:
+            if _pick(cand):
+                break
+
+        # Priority 3: fill to 3 with remaining high-quality evidences.
+        for cand in hq_ranked:
+            if len(selected) >= 3:
+                break
+            _pick(cand)
+
+        # Fallback: keep traceable and diversified if high-quality pool is insufficient.
+        for cand in ranked:
+            if len(selected) >= 3:
+                break
+            if not _has_traceable_source(cand):
+                continue
+            _pick(cand)
+
+        if not selected and ranked:
+            selected = [ranked[0]]
         best = selected[0]
         claim_candidates: List[str] = []
         for src in selected:
@@ -438,6 +618,12 @@ def _build_claim_evidence_map(
             src_url = str(src.get("url") or "").strip() or _uid_to_resolvable_url(str(src.get("uid") or ""))
             src_kf = src.get("key_findings", [])
             snippet = src_kf[0] if isinstance(src_kf, list) and src_kf else str(src.get("summary") or "")[:180]
+            peer_reviewed = bool(src.get("peer_reviewed", False)) or bool(
+                str(src.get("venue") or src.get("journal") or "").strip()
+                and str(src.get("source") or "").lower() not in {"arxiv", "web"}
+            )
+            is_arxiv_only = str(src.get("source") or "").lower() == "arxiv" and not peer_reviewed
+            high_quality = _is_high_quality(src)
             evidence.append(
                 {
                     "uid": src.get("uid"),
@@ -445,15 +631,23 @@ def _build_claim_evidence_map(
                     "url": src_url,
                     "tier": _source_tier(src),
                     "snippet": str(snippet).strip(),
+                    "peer_reviewed": peer_reviewed,
+                    "is_arxiv_only": is_arxiv_only,
+                    "high_quality": high_quality,
+                    "venue": str(src.get("venue") or src.get("journal") or ""),
+                    "pdf_source": str(src.get("pdf_source") or ""),
                 }
             )
 
         a_count = sum(1 for e in evidence if e["tier"] == "A")
         ab_count = sum(1 for e in evidence if e["tier"] in {"A", "B"})
+        peer_count = sum(1 for e in evidence if e.get("peer_reviewed"))
+        hq_count = sum(1 for e in evidence if e.get("high_quality"))
+        arxiv_only_count = sum(1 for e in evidence if e.get("is_arxiv_only"))
         a_ratio = (a_count / max(1, len(evidence)))
-        if ab_count >= 2 and a_ratio >= core_min_a_ratio:
+        if hq_count >= 3 and peer_count >= 2 and arxiv_only_count <= 1 and a_ratio >= core_min_a_ratio:
             strength = "A"
-        elif ab_count >= 2:
+        elif hq_count >= 2 and peer_count >= 1:
             strength = "B"
         else:
             strength = "C"
@@ -485,8 +679,19 @@ def _build_evidence_audit_log(
         evidences = [e for c in rq_claims for e in c.get("evidence", [])]
         a_cnt = sum(1 for e in evidences if e.get("tier") == "A")
         ab_cnt = sum(1 for e in evidences if e.get("tier") in {"A", "B"})
+        peer_cnt = sum(1 for e in evidences if bool(e.get("peer_reviewed", False)))
+        hq_cnt = sum(1 for e in evidences if bool(e.get("high_quality", False)))
+        arxiv_only_cnt = sum(1 for e in evidences if bool(e.get("is_arxiv_only", False)))
         a_ratio = (a_cnt / max(1, len(evidences))) if evidences else 0.0
         gaps: List[str] = []
+        if len(evidences) < 3:
+            gaps.append("evidence_count_below_3")
+        if hq_cnt < 3:
+            gaps.append("high_quality_evidence_below_3")
+        if peer_cnt < 2:
+            gaps.append("peer_reviewed_evidence_below_2")
+        if arxiv_only_cnt > 1:
+            gaps.append("arxiv_only_exceeds_1")
         if len(evidences) < 2:
             gaps.append("evidence_count_below_2")
         if ab_cnt < 2:
@@ -500,6 +705,9 @@ def _build_evidence_audit_log(
                 "evidence_count": len(evidences),
                 "a_count": a_cnt,
                 "ab_count": ab_cnt,
+                "peer_reviewed_count": peer_cnt,
+                "high_quality_count": hq_cnt,
+                "arxiv_only_count": arxiv_only_cnt,
                 "a_ratio": round(a_ratio, 3),
                 "gaps": gaps,
             }
@@ -653,6 +861,8 @@ def _compute_acceptance_metrics(
     a_ratio_pass                : True if avg_a_evidence_ratio >= 0.70
     rq_min2_evidence_rate       : fraction of RQs with >= 2 evidence items (target >= 0.90)
     rq_coverage_pass            : True if rq_min2_evidence_rate >= 0.90
+    rq_min3_high_quality_rate   : fraction of RQs with >= 3 high-quality evidences (target >= 0.90)
+    rq_min2_peer_review_rate    : fraction of RQs with >= 2 peer-reviewed evidences (target >= 0.90)
     reference_budget_compliant  : True if critic did not flag reference_budget_exceeded
     run_view_isolation_active   : always True when run_id is in use (marker for cross-contamination tracking)
     """
@@ -662,6 +872,8 @@ def _compute_acceptance_metrics(
             "a_ratio_pass": False,
             "rq_min2_evidence_rate": 0.0,
             "rq_coverage_pass": False,
+            "rq_min3_high_quality_rate": 0.0,
+            "rq_min2_peer_review_rate": 0.0,
             "reference_budget_compliant": "reference_budget_exceeded" not in report_critic.get("issues", []),
             "run_view_isolation_active": True,
             "note": "no evidence_audit_log available",
@@ -672,6 +884,8 @@ def _compute_acceptance_metrics(
 
     rqs_with_2plus = sum(1 for x in evidence_audit_log if int(x.get("evidence_count", 0)) >= 2)
     rq_coverage_rate = rqs_with_2plus / len(evidence_audit_log)
+    rqs_with_3_hq = sum(1 for x in evidence_audit_log if int(x.get("high_quality_count", 0)) >= 3)
+    rqs_with_2_peer = sum(1 for x in evidence_audit_log if int(x.get("peer_reviewed_count", 0)) >= 2)
 
     ref_compliant = "reference_budget_exceeded" not in report_critic.get("issues", [])
 
@@ -680,6 +894,8 @@ def _compute_acceptance_metrics(
         "a_ratio_pass": avg_a_ratio >= DEFAULT_CORE_MIN_A_RATIO,
         "rq_min2_evidence_rate": round(rq_coverage_rate, 3),
         "rq_coverage_pass": rq_coverage_rate >= 0.90,
+        "rq_min3_high_quality_rate": round(rqs_with_3_hq / len(evidence_audit_log), 3),
+        "rq_min2_peer_review_rate": round(rqs_with_2_peer / len(evidence_audit_log), 3),
         "reference_budget_compliant": ref_compliant,
         "run_view_isolation_active": True,
         "critic_issues": report_critic.get("issues", []),
@@ -717,11 +933,19 @@ def _is_topic_relevant(
 
 def _has_traceable_source(a: Dict[str, Any]) -> bool:
     url = str(a.get("url") or "").strip()
+    pdf_url = str(a.get("pdf_url") or "").strip()
+    pdf_path = str(a.get("pdf_path") or "").strip()
     uid = str(a.get("uid") or "").strip().lower()
     if url:
         parsed = urlparse(url)
         if parsed.scheme in {"http", "https"} and parsed.netloc:
             return True
+    if pdf_url:
+        parsed = urlparse(pdf_url)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return True
+    if pdf_path:
+        return True
     return uid.startswith("arxiv:") or uid.startswith("doi:")
 
 
@@ -911,14 +1135,64 @@ def plan_research(state: ResearchState) -> Dict[str, Any]:
             "web_queries": [topic],
         }
 
-    max_q = cfg.get("agent", {}).get("max_queries_per_iteration", 3)
-    academic_queries = result.get("academic_queries", result.get("search_queries", [topic]))[:max_q]
-    web_queries = result.get("web_queries", [topic])[:max_q]
+    max_q = int(cfg.get("agent", {}).get("max_queries_per_iteration", 3))
+    seed_academic_queries = result.get("academic_queries", result.get("search_queries", [topic]))[:max_q]
+    seed_web_queries = result.get("web_queries", [topic])[:max_q]
     research_questions = result.get("research_questions", [])[: max(1, budget["max_research_questions"])]
+    if not research_questions:
+        research_questions = [f"What are the key developments in {topic}?"]
+
+    # If previous iteration identified specific RQ evidence gaps, focus retrieval on those.
+    focus_rqs = state.get("_focus_research_questions", [])
+    rewrite_targets = (
+        [rq for rq in research_questions if rq in focus_rqs]
+        if isinstance(focus_rqs, list) and focus_rqs
+        else research_questions
+    )
+    if not rewrite_targets:
+        rewrite_targets = research_questions
+
+    rewrite_cfg = cfg.get("agent", {}).get("query_rewrite", {})
+    min_per_rq = int(rewrite_cfg.get("min_per_rq", 6))
+    max_per_rq = int(rewrite_cfg.get("max_per_rq", 8))
+    per_rq = max(min_per_rq, min(10, max_per_rq))
+    max_total_queries = int(
+        rewrite_cfg.get(
+            "max_total_queries",
+            max(max_q, len(rewrite_targets) * per_rq),
+        )
+    )
+    expanded_queries = _expand_query_set(
+        topic=topic,
+        rq_list=rewrite_targets,
+        seed_queries=list(dict.fromkeys(seed_academic_queries + seed_web_queries)),
+        max_per_rq=per_rq,
+        max_total=max_total_queries,
+    )
+    if not expanded_queries:
+        expanded_queries = [{"query": topic, "type": "precision"}]
+
+    query_type_map = {x["query"]: x["type"] for x in expanded_queries}
+    precision_queries = [x["query"] for x in expanded_queries if x["type"] == "precision"]
+    recall_queries = [x["query"] for x in expanded_queries if x["type"] == "recall"]
+
+    academic_queries = list(dict.fromkeys([x["query"] for x in expanded_queries]))
+    # Recall queries are better suited to broad web retrieval.
+    web_queries = list(dict.fromkeys(recall_queries + seed_web_queries))
+
+    # Respect source switches in config at planning time.
+    if not _academic_sources_enabled(cfg):
+        academic_queries = []
+    if not _web_sources_enabled(cfg):
+        web_queries = []
 
     # Merge all queries into a unified list for state tracking
     all_queries = list(dict.fromkeys(academic_queries + web_queries))
-    query_routes = {q: _route_query(q, cfg) for q in all_queries}
+    query_routes = {}
+    for q in all_queries:
+        route = _route_query(q, cfg)
+        route["query_type"] = query_type_map.get(q, "precision")
+        query_routes[q] = route
 
     # Route simple academic queries to web-only path to save retrieval cost.
     routed_academic = [q for q in academic_queries if query_routes.get(q, {}).get("use_academic", True)]
@@ -934,9 +1208,12 @@ def plan_research(state: ResearchState) -> Dict[str, Any]:
         # Store typed queries for the fetch node
         "_academic_queries": routed_academic,
         "_web_queries": routed_web,
+        "_focus_research_questions": [],
         "status": (
             f"Iteration {iteration}: planned {len(routed_academic)} academic + "
-            f"{len(routed_web)} web queries under scoped budget"
+            f"{len(routed_web)} web queries under scoped budget "
+            f"[enabled: academic={_academic_sources_enabled(cfg)}, web={_web_sources_enabled(cfg)}, "
+            f"precision={len(precision_queries)}, recall={len(recall_queries)}]"
         ),
     })
 
@@ -1321,6 +1598,22 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
         analysis["source"] = paper.get("source", "arxiv")
         if paper.get("url"):
             analysis["url"] = paper["url"]
+        for key in (
+            "venue",
+            "journal",
+            "citation_count",
+            "peer_reviewed",
+            "pdf_source",
+            "final_score",
+            "doi",
+            "arxiv_id",
+            "source_origins",
+            "query_origins",
+        ):
+            if key in paper and paper.get(key) not in (None, "", []):
+                analysis[key] = paper.get(key)
+        if not analysis.get("url") and paper.get("pdf_url"):
+            analysis["url"] = paper.get("pdf_url")
         analysis["source_tier"] = _source_tier(analysis)
         new_analyses.append(analysis)
 
@@ -1371,6 +1664,9 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
         analysis["title"] = web["title"]
         analysis["url"] = web.get("url", "")
         analysis["source"] = "web"
+        for key in ("venue", "journal", "citation_count", "peer_reviewed", "pdf_source", "final_score"):
+            if key in web and web.get(key) not in (None, "", []):
+                analysis[key] = web.get(key)
         analysis["source_tier"] = _source_tier(analysis)
         new_analyses.append(analysis)
 
@@ -1539,8 +1835,10 @@ def evaluate_progress(state: ResearchState) -> Dict[str, Any]:
     should_continue = bool(result.get("should_continue", False))
     evidence_audit_log = state.get("evidence_audit_log", [])
     unresolved_audit = [x for x in evidence_audit_log if x.get("gaps")]
+    focus_rqs: List[str] = []
     if unresolved_audit and iteration + 1 < max_iter:
         should_continue = True
+        focus_rqs = [str(x.get("research_question", "")).strip() for x in unresolved_audit if str(x.get("research_question", "")).strip()]
         result["gaps"] = list(dict.fromkeys(result.get("gaps", []) + [
             f"Evidence gap in RQ: {x.get('research_question')}" for x in unresolved_audit
         ]))
@@ -1548,6 +1846,7 @@ def evaluate_progress(state: ResearchState) -> Dict[str, Any]:
     return _ns({
         "should_continue": should_continue,
         "gaps": result.get("gaps", state.get("gaps", [])),
+        "_focus_research_questions": focus_rqs,
         "iteration": iteration + 1,
         "status": "Continuing research..." if should_continue else "Evidence sufficient, generating report",
     })

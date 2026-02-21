@@ -44,6 +44,8 @@ class RunMetrics(TypedDict, total=False):
     a_ratio_pass: bool
     rq_min2_evidence_rate: float
     rq_coverage_pass: bool
+    rq_min3_high_quality_rate: float
+    rq_min2_peer_review_rate: float
     reference_budget_compliant: bool
     run_view_isolation_active: bool
     critic_issues: List[str]
