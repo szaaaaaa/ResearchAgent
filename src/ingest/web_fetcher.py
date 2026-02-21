@@ -15,6 +15,7 @@ Supports:
 import logging
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional
@@ -48,6 +49,8 @@ _LIKELY_CN_DOMAINS = {
     "csdn.net",
     "juejin.cn",
 }
+_S2_LOCK = threading.Lock()
+_S2_LAST_CALL_TS = 0.0
 
 
 @dataclass
@@ -91,6 +94,23 @@ def _url_to_uid(url: str) -> str:
     path = parsed.path.strip("/").replace("/", "_")
     raw = f"{host}_{path}" if path else host
     return re.sub(r"[^a-zA-Z0-9._-]", "_", raw)[:120]
+
+
+def _respect_semantic_scholar_rate_limit(min_interval_sec: float) -> None:
+    """Global throttle for Semantic Scholar API calls in this process."""
+    global _S2_LAST_CALL_TS
+    wait = 0.0
+    now = time.monotonic()
+    with _S2_LOCK:
+        elapsed = now - _S2_LAST_CALL_TS
+        if elapsed < max(0.0, float(min_interval_sec)):
+            wait = float(min_interval_sec) - elapsed
+        if wait > 0:
+            _S2_LAST_CALL_TS = now + wait
+        else:
+            _S2_LAST_CALL_TS = now
+    if wait > 0:
+        time.sleep(wait)
 
 
 def dedup_results(*result_lists: List[WebResult]) -> List[WebResult]:
@@ -397,7 +417,7 @@ def search_openalex(
                 "select": (
                     "id,doi,title,display_name,publication_year,abstract_inverted_index,"
                     "authorships,primary_location,best_oa_location,ids,cited_by_count,"
-                    "host_venue,type"
+                    "type"
                 ),
             },
             headers=_HEADERS,
@@ -448,12 +468,10 @@ def search_openalex(
         peer_reviewed = False
         primary = row.get("primary_location") or {}
         best_oa = row.get("best_oa_location") or {}
-        host_venue = row.get("host_venue") or {}
         landing = primary.get("landing_page_url")
         primary_source = primary.get("source") or {}
         venue = (
-            (host_venue.get("display_name") or "").strip()
-            or (primary_source.get("display_name") or "").strip()
+            (primary_source.get("display_name") or "").strip()
         )
         source_type = (primary_source.get("type") or "").strip().lower()
         if source_type in {"journal", "conference"}:
@@ -498,28 +516,62 @@ def search_openalex(
 def search_semantic_scholar(
     query: str,
     max_results: int = 10,
+    *,
+    min_interval_sec: float = 1.0,
+    max_retries: int = 4,
+    backoff_sec: float = 1.5,
 ) -> List[WebResult]:
     """Search Semantic Scholar for academic papers (free, no key)."""
     results: List[WebResult] = []
-    try:
-        resp = requests.get(
-            _S2_SEARCH,
-            params={
-                "query": query,
-                "limit": min(max_results, 100),
-                "fields": (
-                    "title,authors,year,abstract,externalIds,url,openAccessPdf,"
-                    "citationCount,venue,journal,publicationTypes"
-                ),
-            },
-            headers=_HEADERS,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json().get("data", [])
-    except Exception as e:
-        logger.error("Semantic Scholar search failed: %s", e)
-        return []
+    params = {
+        "query": query,
+        "limit": min(max_results, 100),
+        "fields": (
+            "title,authors,year,abstract,externalIds,url,openAccessPdf,"
+            "citationCount,venue,journal,publicationTypes"
+        ),
+    }
+    data = []
+    for attempt in range(max(1, int(max_retries)) + 1):
+        try:
+            _respect_semantic_scholar_rate_limit(min_interval_sec=min_interval_sec)
+            resp = requests.get(
+                _S2_SEARCH,
+                params=params,
+                headers=_HEADERS,
+                timeout=30,
+            )
+            status = int(resp.status_code)
+            if status == 429 or status >= 500:
+                if attempt < int(max_retries):
+                    sleep_for = max(0.1, float(backoff_sec)) * (2 ** attempt)
+                    logger.warning(
+                        "Semantic Scholar throttled/server error (status=%s). "
+                        "Retrying in %.1fs (attempt %d/%d)",
+                        status,
+                        sleep_for,
+                        attempt + 1,
+                        int(max_retries) + 1,
+                    )
+                    time.sleep(sleep_for)
+                    continue
+            resp.raise_for_status()
+            data = (resp.json() or {}).get("data", []) or []
+            break
+        except Exception as e:
+            if attempt < int(max_retries):
+                sleep_for = max(0.1, float(backoff_sec)) * (2 ** attempt)
+                logger.warning(
+                    "Semantic Scholar request failed (%s). Retrying in %.1fs (attempt %d/%d)",
+                    e,
+                    sleep_for,
+                    attempt + 1,
+                    int(max_retries) + 1,
+                )
+                time.sleep(sleep_for)
+                continue
+            logger.error("Semantic Scholar search failed: %s", e)
+            return []
 
     for paper in data:
         paper_id = paper.get("paperId", "")

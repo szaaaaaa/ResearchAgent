@@ -482,6 +482,9 @@ class DefaultSearchBackend:
             arxiv_per_query = int(arxiv_cfg.get("max_results_per_query", target_per_query))
             gs_per_query = int(gs_cfg.get("max_results_per_query", target_per_query))
             s2_per_query = int(s2_cfg.get("max_results_per_query", target_per_query))
+            s2_min_interval = float(s2_cfg.get("polite_delay_sec", 1.0))
+            s2_max_retries = int(s2_cfg.get("max_retries", 4))
+            s2_backoff = float(s2_cfg.get("retry_backoff_sec", 1.5))
             oa_per_query = int(oa_cfg.get("max_results_per_query", target_per_query))
             max_per_venue = int(cfg.get("agent", {}).get("source_ranking", {}).get("max_per_venue", 2))
 
@@ -544,7 +547,15 @@ class DefaultSearchBackend:
                         s2_max = max(s2_per_query, need_more)
                         logger.info("[Semantic Scholar] Searching: %s (max %d)", q, s2_max)
                         try:
-                            merged_results.extend(query_semantic_scholar(q, max_results=s2_max))
+                            merged_results.extend(
+                                query_semantic_scholar(
+                                    q,
+                                    max_results=s2_max,
+                                    min_interval_sec=s2_min_interval,
+                                    max_retries=s2_max_retries,
+                                    backoff_sec=s2_backoff,
+                                )
+                            )
                         except Exception as e:  # pragma: no cover - network path
                             logger.error("[Semantic Scholar] Failed for '%s': %s", q, e)
 

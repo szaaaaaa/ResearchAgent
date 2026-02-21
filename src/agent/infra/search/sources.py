@@ -42,8 +42,21 @@ def query_google_scholar(query: str, *, max_results: int):
     return search_google_scholar(query, max_results=max_results)
 
 
-def query_semantic_scholar(query: str, *, max_results: int):
-    return search_semantic_scholar(query, max_results=max_results)
+def query_semantic_scholar(
+    query: str,
+    *,
+    max_results: int,
+    min_interval_sec: float = 1.0,
+    max_retries: int = 4,
+    backoff_sec: float = 1.5,
+):
+    return search_semantic_scholar(
+        query,
+        max_results=max_results,
+        min_interval_sec=min_interval_sec,
+        max_retries=max_retries,
+        backoff_sec=backoff_sec,
+    )
 
 
 def query_openalex(query: str, *, max_results: int):

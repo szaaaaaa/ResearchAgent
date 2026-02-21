@@ -148,6 +148,9 @@ sources:
   semantic_scholar:
     enabled: true
     max_results_per_query: 20
+    polite_delay_sec: 1.2
+    max_retries: 4
+    retry_backoff_sec: 1.5
 budget_guard:
   max_tokens: 5000000
   max_api_calls: 2000
