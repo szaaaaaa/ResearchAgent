@@ -22,6 +22,13 @@ class DomainDetectionTest(unittest.TestCase):
         )
         self.assertFalse(ok)
 
+    def test_detect_domain_by_rules_for_driftrpl_topic(self) -> None:
+        ok = nodes._detect_domain_by_rules(
+            "Embedding-aware Prototype Prioritized Replay for Online Time-Series Forecasting under Concept Drift with Limited Memory",
+            ["How does prioritized replay improve adaptation under concept drift?"],
+        )
+        self.assertTrue(ok)
+
 
 class ExperimentPlanValidationTest(unittest.TestCase):
     def test_validate_experiment_plan_empty(self) -> None:
@@ -219,6 +226,38 @@ class RecommendExperimentsNodeTest(unittest.TestCase):
         result = nodes.recommend_experiments(state)
         plan = result.get("experiment_plan", {})
         self.assertEqual(len(plan.get("rq_experiments", [])), 1)
+
+    @patch("src.agent.nodes._llm_call")
+    def test_domain_fallback_keeps_experiment_loop_for_ml_topic(self, mock_llm) -> None:
+        mock_plan = {
+            "domain": "machine_learning",
+            "subfield": "time series",
+            "task_type": "forecasting",
+            "rq_experiments": [
+                {
+                    "research_question": "RQ1",
+                    "task": "online forecasting",
+                    "datasets": [{"name": "Synthetic Drift", "url": "https://example.com"}],
+                    "environment": {"python": "3.10", "cuda": "12.1", "pytorch": "2.3"},
+                    "hyperparameters": {"baseline": {"lr": 1e-3}, "search_space": {"lr": [1e-4, 1e-3]}},
+                    "run_commands": {"train": "python train.py", "eval": "python eval.py"},
+                    "evidence_refs": [{"uid": "arxiv:1234"}],
+                }
+            ],
+        }
+        mock_llm.side_effect = [
+            json.dumps({"domain": "other", "subfield": "", "task_type": ""}),
+            json.dumps(mock_plan),
+        ]
+        state = {
+            "topic": "Embedding-aware prototype prioritized replay for online time-series forecasting under concept drift",
+            "research_questions": ["How does prioritized replay help continual adaptation?"],
+            "_cfg": {"llm": {"model": "gpt-4.1-mini", "temperature": 0.3}},
+        }
+        result = nodes.recommend_experiments(state)
+        self.assertTrue(bool(result.get("await_experiment_results", False)))
+        self.assertIn("domain_fallback=rules", str(result.get("status", "")))
+        self.assertEqual(mock_llm.call_count, 2)
 
 
 class ExperimentResultsValidationTest(unittest.TestCase):

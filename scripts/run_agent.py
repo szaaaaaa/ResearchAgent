@@ -207,11 +207,9 @@ def main() -> None:
             "The workflow is waiting for human-submitted experiment results.\n"
             "Fill `experiment_results` in the saved state file and resume from HITL checkpoint.\n"
         )
-    report_path = out_dir / f"research_report_{tag}.md"
-    report_path.write_text(report, encoding="utf-8")
-    logger.info("Report saved: %s", report_path)
     run_report_path = run_dir / "research_report.md"
     run_report_path.write_text(report, encoding="utf-8")
+    logger.info("Report saved: %s", run_report_path)
 
     # Save full state (JSON-serializable subset)
     state_export = {
@@ -331,7 +329,7 @@ def main() -> None:
     logger.info("Web sources collected: %d", n_web)
     logger.info("Total analyses: %d", n_analyses)
     logger.info("Iterations: %d", final_state.get("iteration", 0))
-    logger.info("Report: %s", report_path)
+    logger.info("Report: %s", run_report_path)
     logger.info("Run dir: %s", run_dir)
     logger.info("=" * 60)
 

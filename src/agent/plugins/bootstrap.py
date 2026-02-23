@@ -15,7 +15,12 @@ def ensure_plugins_registered() -> None:
     try:
         from src.agent.plugins.llm import openai_chat  # noqa: F401
     except Exception as exc:  # pragma: no cover - optional dependency path
-        logger.warning("Skipping built-in LLM plugin registration: %s", exc)
+        logger.warning("Skipping built-in OpenAI LLM plugin registration: %s", exc)
+
+    try:
+        from src.agent.plugins.llm import gemini_chat  # noqa: F401
+    except Exception as exc:  # pragma: no cover - optional dependency path
+        logger.warning("Skipping built-in Gemini LLM plugin registration: %s", exc)
 
     try:
         from src.agent.plugins.search import default_search  # noqa: F401

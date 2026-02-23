@@ -4,6 +4,7 @@ import hashlib
 import logging
 import math
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
@@ -30,6 +31,22 @@ from src.agent.plugins.registry import register_search_backend
 from src.ingest.fetchers import download_pdf
 
 logger = logging.getLogger(__name__)
+
+# Only attempt direct PDF downloads from open-access friendly hosts.
+_PDF_DOWNLOAD_ALLOW_HOSTS = {
+    "arxiv.org",
+    "export.arxiv.org",
+    "openreview.net",
+    "openaccess.thecvf.com",
+    "aclanthology.org",
+    "proceedings.mlr.press",
+    "jmlr.org",
+    "ceur-ws.org",
+    "papers.nips.cc",
+    "neurips.cc",
+}
+_PDF_DOMAIN_DENY_CACHE: Dict[str, float] = {}
+_PDF_DOMAIN_DENY_TTL_SEC = 1800.0
 
 _TOP_VENUE_HINTS = {
     "neurips",
@@ -309,9 +326,65 @@ def _rerank_with_diversity(
     return out
 
 
+def _pdf_host_from_url(url: str) -> str:
+    try:
+        host = urlparse(str(url or "")).netloc.lower().strip()
+    except Exception:
+        return ""
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+def _resolve_pdf_download_policy(cfg: Dict[str, Any] | None) -> tuple[bool, set[str], float]:
+    sources_cfg = (cfg or {}).get("sources", {})
+    pdf_cfg = sources_cfg.get("pdf_download", {}) if isinstance(sources_cfg, dict) else {}
+    if not isinstance(pdf_cfg, dict):
+        pdf_cfg = {}
+    only_allowed_hosts = bool(pdf_cfg.get("only_allowed_hosts", True))
+    raw_allowed = pdf_cfg.get("allowed_hosts", list(_PDF_DOWNLOAD_ALLOW_HOSTS))
+    if isinstance(raw_allowed, list) and raw_allowed:
+        allowed_hosts = {
+            str(x).strip().lower()
+            for x in raw_allowed
+            if str(x).strip()
+        }
+    else:
+        allowed_hosts = set(_PDF_DOWNLOAD_ALLOW_HOSTS)
+    ttl_sec = float(pdf_cfg.get("forbidden_host_ttl_sec", _PDF_DOMAIN_DENY_TTL_SEC))
+    return only_allowed_hosts, allowed_hosts, ttl_sec
+
+
+def _is_pdf_host_whitelisted(host: str, allowed_hosts: set[str]) -> bool:
+    h = str(host or "").lower().strip()
+    if not h:
+        return False
+    return any(h == d or h.endswith(f".{d}") for d in allowed_hosts)
+
+
+def _is_pdf_host_temp_blocked(host: str) -> bool:
+    h = str(host or "").lower().strip()
+    if not h:
+        return False
+    until = float(_PDF_DOMAIN_DENY_CACHE.get(h, 0.0))
+    now = time.time()
+    if until <= now:
+        _PDF_DOMAIN_DENY_CACHE.pop(h, None)
+        return False
+    return True
+
+
+def _mark_pdf_host_temp_blocked(host: str, ttl_sec: float) -> None:
+    h = str(host or "").lower().strip()
+    if not h:
+        return
+    _PDF_DOMAIN_DENY_CACHE[h] = time.time() + max(0.0, float(ttl_sec))
+
+
 def _download_pdf_from_url_if_any(
     item: Dict[str, Any],
     *,
+    cfg: Dict[str, Any] | None = None,
     papers_dir: str,
     allow_download: bool,
     polite_delay_sec: float,
@@ -321,11 +394,28 @@ def _download_pdf_from_url_if_any(
     pdf_url = str(item.get("pdf_url") or "").strip()
     if not pdf_url:
         return item
+    only_allowed_hosts, allowed_hosts, ttl_sec = _resolve_pdf_download_policy(cfg)
+    host = _pdf_host_from_url(pdf_url)
+    if _is_pdf_host_temp_blocked(host):
+        logger.debug(
+            "Skip PDF download for %s: host %s is temporarily blocked",
+            item.get("uid") or item.get("title"),
+            host,
+        )
+        return item
+    if only_allowed_hosts and not _is_pdf_host_whitelisted(host, allowed_hosts):
+        if item.get("doi") or _extract_doi_from_uid(str(item.get("uid") or "")):
+            item["pdf_source"] = item.get("pdf_source") or "metadata_only"
+        logger.debug(
+            "Skip direct PDF download for %s: host %s not in allowlist",
+            item.get("uid") or item.get("title"),
+            host or "(none)",
+        )
+        return item
     try:
         uid = str(item.get("uid") or _canonical_paper_key(item))
         pdf_path = download_pdf(pdf_url, papers_dir, uid, polite_delay_sec=polite_delay_sec)
         item["pdf_path"] = pdf_path
-        host = urlparse(pdf_url).netloc.lower()
         if "arxiv.org" in host:
             item["pdf_source"] = item.get("pdf_source") or "arxiv"
         elif item.get("doi"):
@@ -333,7 +423,19 @@ def _download_pdf_from_url_if_any(
         else:
             item["pdf_source"] = item.get("pdf_source") or "openaccess"
     except Exception as e:  # pragma: no cover - network path
-        logger.warning("PDF download failed for %s: %s", item.get("uid") or item.get("title"), e)
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        if int(status or 0) == 403 and host:
+            _mark_pdf_host_temp_blocked(host, ttl_sec)
+            logger.warning(
+                "PDF download forbidden for host %s; temporarily blocked %.0fs (%s)",
+                host,
+                ttl_sec,
+                item.get("uid") or item.get("title"),
+            )
+        elif int(status or 0) == 404:
+            logger.info("PDF not found for %s: %s", item.get("uid") or item.get("title"), e)
+        else:
+            logger.warning("PDF download failed for %s: %s", item.get("uid") or item.get("title"), e)
     return item
 
 
@@ -367,6 +469,7 @@ def _venue_first_pdf_fallback(
     # 1) Prefer publisher/open-access PDF if available.
     item = _download_pdf_from_url_if_any(
         item,
+        cfg=cfg,
         papers_dir=papers_dir,
         allow_download=allow_download,
         polite_delay_sec=polite_delay_sec,

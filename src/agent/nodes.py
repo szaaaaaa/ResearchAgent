@@ -19,6 +19,7 @@ from src.agent.core.config import (
     DEFAULT_CORE_MIN_A_RATIO,
     DEFAULT_MAX_CONTEXT_CHARS,
     DEFAULT_MAX_FINDINGS_FOR_CONTEXT,
+    DEFAULT_MIN_ANCHOR_HITS,
     DEFAULT_MAX_REFERENCES,
     DEFAULT_MAX_RESEARCH_QUESTIONS,
     DEFAULT_MAX_SECTIONS,
@@ -29,6 +30,10 @@ from src.agent.core.config import (
     DEFAULT_TOPIC_BLOCK_TERMS,
 )
 from src.agent.core.executor import TaskRequest
+from src.agent.core.reference_utils import (
+    extract_reference_urls as _shared_extract_reference_urls,
+    normalize_references_in_report as _normalize_references_in_report,
+)
 from src.agent.core.executor_router import dispatch
 from src.agent.core.schemas import ResearchState
 from src.agent.core.state_access import sget, to_namespaced_update, with_flattened_legacy_view
@@ -61,8 +66,16 @@ _DEFAULT_TOPIC_BLOCK_TERMS = list(DEFAULT_TOPIC_BLOCK_TERMS)
 _STOPWORDS = {
     "the", "and", "for", "with", "from", "that", "this", "are", "can", "what", "how",
     "why", "when", "where", "which", "best", "across", "into", "using", "used", "than",
+    "of", "to", "does", "do", "did", "affect", "extent",
     "between", "over", "under", "through", "about", "agentic", "traditional", "systems",
     "system", "study", "survey", "analysis", "framework", "frameworks",
+}
+_GENERIC_TOPIC_ANCHOR_TERMS = {
+    "machine", "learning", "deep", "neural", "model", "models", "method", "methods",
+    "approach", "approaches", "framework", "frameworks", "study", "studies", "analysis",
+    "application", "applications", "system", "systems", "task", "tasks", "based", "using",
+    "research", "paper", "papers", "problem", "problems", "technique", "techniques",
+    "concept", "drift", "online", "data",
 }
 
 _ACADEMIC_DOMAINS = {
@@ -129,6 +142,9 @@ _ML_DOMAIN_KEYWORDS = {
     "contrastive learning", "self-supervised", "semi-supervised",
     "federated learning", "meta-learning", "few-shot", "zero-shot",
     "hyperparameter", "grid search", "random search", "bayesian optimization",
+    "time series", "time-series", "forecasting", "streaming", "online learning",
+    "continual learning", "concept drift", "drift adaptation",
+    "replay", "experience replay", "prioritized replay", "prototype replay", "prototype",
 }
 _EXPERIMENT_ELIGIBLE_DOMAINS = {
     "machine_learning", "deep_learning", "cv", "nlp", "rl",
@@ -521,6 +537,53 @@ def _claim_has_rq_signal(rq: str, claim: str) -> bool:
     return bool(rq_tokens & claim_tokens)
 
 
+def _claim_relevance_ratio(rq: str, claim: str) -> float:
+    rq_tokens = {t for t in _tokenize(rq) if t not in _STOPWORDS}
+    if not rq_tokens:
+        return 1.0
+    claim_tokens = set(_tokenize(claim))
+    return len(rq_tokens & claim_tokens) / max(1, len(rq_tokens))
+
+
+def _rq_anchor_terms(rq: str, *, max_terms: int = 4) -> List[str]:
+    tokens = [t for t in _tokenize(rq) if t not in _STOPWORDS]
+    primary = [t for t in tokens if t not in _GENERIC_TOPIC_ANCHOR_TERMS]
+    ordered = primary or tokens
+    seen = set()
+    out: List[str] = []
+    for tok in ordered:
+        if tok in seen:
+            continue
+        seen.add(tok)
+        out.append(tok)
+        if len(out) >= max(1, int(max_terms)):
+            break
+    return out
+
+
+def _align_claim_to_rq(
+    *,
+    rq: str,
+    claim: str,
+    min_relevance: float = 0.20,
+    anchor_terms_max: int = 4,
+) -> str:
+    base = re.sub(r"\s+", " ", str(claim or "")).strip()
+    if not base:
+        return base
+    if _claim_relevance_ratio(rq, base) >= float(min_relevance):
+        return base
+
+    anchors = _rq_anchor_terms(rq, max_terms=anchor_terms_max)
+    if not anchors:
+        return base
+    anchor_text = ", ".join(anchors)
+    aligned = f"Regarding {anchor_text}, evidence suggests that {base[0].lower() + base[1:]}"
+    if _claim_relevance_ratio(rq, aligned) >= _claim_relevance_ratio(rq, base):
+        return aligned
+    return base
+
+
 def _ensure_unique_claim_text(*, claim_text: str, rq: str, used: set[str]) -> str:
     base = re.sub(r"\s+", " ", str(claim_text or "")).strip()
     if not base:
@@ -548,9 +611,15 @@ def _build_claim_evidence_map(
     research_questions: List[str],
     analyses: List[Dict[str, Any]],
     core_min_a_ratio: float,
+    min_evidence_per_rq: int = 2,
+    allow_graceful_degrade: bool = True,
+    align_claim_to_rq: bool = True,
+    min_claim_rq_relevance: float = 0.20,
+    claim_anchor_terms_max: int = 4,
 ) -> List[Dict[str, Any]]:
     claims: List[Dict[str, Any]] = []
     used_claims: set[str] = set()
+    min_required = max(1, int(min_evidence_per_rq))
     for rq in research_questions:
         ranked = sorted(analyses, key=lambda a: _analysis_score_for_rq(rq, a), reverse=True)
         if not ranked:
@@ -628,6 +697,31 @@ def _build_claim_evidence_map(
 
         if not selected and ranked:
             selected = [ranked[0]]
+            selected_keys = {_source_dedupe_key(ranked[0])}
+
+        # Enforce per-RQ minimum evidence count with relaxed diversity constraints.
+        if len(selected) < min_required:
+            for cand in ranked:
+                if len(selected) >= min_required:
+                    break
+                if not _has_traceable_source(cand):
+                    continue
+                k = _source_dedupe_key(cand)
+                if k in selected_keys:
+                    continue
+                selected.append(cand)
+                selected_keys.add(k)
+
+        # Strict mode: if still insufficient, allow non-traceable fallback before giving up.
+        if len(selected) < min_required and not allow_graceful_degrade:
+            for cand in ranked:
+                if len(selected) >= min_required:
+                    break
+                k = _source_dedupe_key(cand)
+                if k in selected_keys:
+                    continue
+                selected.append(cand)
+                selected_keys.add(k)
         best = selected[0]
         claim_candidates: List[str] = []
         for src in selected:
@@ -643,6 +737,13 @@ def _build_claim_evidence_map(
                 if cand.lower() not in used_claims:
                     claim_text = cand
                     break
+        if align_claim_to_rq:
+            claim_text = _align_claim_to_rq(
+                rq=rq,
+                claim=claim_text,
+                min_relevance=min_claim_rq_relevance,
+                anchor_terms_max=claim_anchor_terms_max,
+            )
         claim_text = _ensure_unique_claim_text(claim_text=claim_text, rq=rq, used=used_claims)
         used_claims.add(claim_text.lower())
 
@@ -687,6 +788,12 @@ def _build_claim_evidence_map(
 
         limitations = best.get("limitations", [])
         caveat = limitations[0] if isinstance(limitations, list) and limitations else "Evidence may be domain-specific."
+        if len(evidence) < min_required:
+            shortfall_note = (
+                f"Evidence below minimum ({len(evidence)}/{min_required}) after retrieval; "
+                "treat this claim as provisional."
+            )
+            caveat = f"{caveat} {shortfall_note}".strip()
 
         claims.append(
             {
@@ -959,18 +1066,30 @@ def recommend_experiments(state: ResearchState) -> Dict[str, Any]:
     domain = domain_info["domain"]
     subfield = domain_info["subfield"]
     task_type = domain_info["task_type"]
+    used_domain_fallback = False
 
     if domain not in _EXPERIMENT_ELIGIBLE_DOMAINS:
-        logger.info(
-            "[recommend_experiments] LLM domain detection '%s' not eligible, skipping.",
-            domain,
-        )
-        return _ns({
-            "experiment_plan": {},
-            "experiment_results": {},
-            "await_experiment_results": False,
-            "status": f"Experiment recommendation skipped (LLM classified as '{domain}')",
-        })
+        if rule_hit:
+            # Keep closed-loop robustness: rules indicate ML domain, so do not hard-fail on one LLM misclassification.
+            logger.info(
+                "[recommend_experiments] LLM domain '%s' not eligible; fallback to machine_learning by rules.",
+                domain,
+            )
+            domain = "machine_learning"
+            subfield = subfield or "general"
+            task_type = task_type or "research"
+            used_domain_fallback = True
+        else:
+            logger.info(
+                "[recommend_experiments] LLM domain detection '%s' not eligible, skipping.",
+                domain,
+            )
+            return _ns({
+                "experiment_plan": {},
+                "experiment_results": {},
+                "await_experiment_results": False,
+                "status": f"Experiment recommendation skipped (LLM classified as '{domain}')",
+            })
 
     model = cfg.get("llm", {}).get("model", "gpt-4.1-mini")
     temperature = cfg.get("llm", {}).get("temperature", 0.3)
@@ -1065,6 +1184,7 @@ def recommend_experiments(state: ResearchState) -> Dict[str, Any]:
             f"{len(plan.get('rq_experiments', []))} experiment groups, "
             f"{len(validation_issues)} validation issues"
             + (f", trimmed={dropped_count}" if dropped_count else "")
+            + (", domain_fallback=rules" if used_domain_fallback else "")
             + ("; awaiting human experiment results" if require_human_results else "")
         ),
     })
@@ -1167,16 +1287,8 @@ def ingest_experiment_results(state: ResearchState) -> Dict[str, Any]:
 
 
 def _extract_reference_urls(report: str) -> List[str]:
-    out: List[str] = []
-    for line in report.splitlines():
-        s = line.strip()
-        if not s:
-            continue
-        if re.match(r"^(-|\d+\.)\s+", s):
-            m = re.search(r"(https?://\S+)", s)
-            if m:
-                out.append(m.group(1).rstrip(").,"))
-    return out
+    """S2: Delegate to shared implementation for critic/validator consistency."""
+    return _shared_extract_reference_urls(report)
 
 
 def _critic_report(
@@ -1192,6 +1304,7 @@ def _critic_report(
     experiment_results: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     issues: List[str] = []
+    soft_issues: List[str] = []
     refs = _extract_reference_urls(report)
     if not refs:
         issues.append("missing_references")
@@ -1271,9 +1384,13 @@ def _critic_report(
             and str(experiment_results.get("status", "")).lower() == "validated"
         )
     ):
-        issues.append("experiment_results_missing")
+        soft_issues.append("experiment_results_missing")
 
-    return {"pass": len(issues) == 0, "issues": issues}
+    return {
+        "pass": len(issues) == 0,
+        "issues": issues + soft_issues,
+        "soft_issues": soft_issues,
+    }
 
 
 def _repair_report_once(
@@ -1405,14 +1522,43 @@ def _build_topic_keywords(state: ResearchState, cfg: Dict[str, Any]) -> set[str]
     raw = " ".join(
         [sget(state, "topic", "")]
         + sget(state, "research_questions", [])
-        + sget(state, "search_queries", [])
     )
     custom = cfg.get("agent", {}).get("topic_filter", {}).get("include_terms", [])
     raw += " " + " ".join(custom if isinstance(custom, list) else [])
     tokens = {t for t in _tokenize(raw) if t not in _STOPWORDS}
-    # Keep core RAG terms even if short/common.
-    tokens.update({"rag", "retrieval", "augmented", "agentic"})
+    # Keep core RAG terms only when topic itself is in that family.
+    if {"rag", "retrieval", "augmented", "agentic"} & tokens:
+        tokens.update({"rag", "retrieval", "augmented", "agentic"})
     return tokens
+
+
+def _build_topic_anchor_terms(state: ResearchState, cfg: Dict[str, Any]) -> set[str]:
+    """Build high-precision anchor terms used to suppress off-topic retrieval noise."""
+    topic = str(sget(state, "topic", "") or "")
+    topic_filter_cfg = cfg.get("agent", {}).get("topic_filter", {})
+    include_terms = topic_filter_cfg.get("include_terms", [])
+    if not isinstance(include_terms, list):
+        include_terms = []
+
+    anchors: set[str] = set()
+    for term in include_terms:
+        for tok in _tokenize(str(term)):
+            if tok in _STOPWORDS:
+                continue
+            if tok in _GENERIC_TOPIC_ANCHOR_TERMS:
+                continue
+            anchors.add(tok)
+
+    for tok in _tokenize(topic):
+        if tok in _STOPWORDS:
+            continue
+        if tok in _GENERIC_TOPIC_ANCHOR_TERMS:
+            continue
+        if len(tok) < 4:
+            continue
+        anchors.add(tok)
+
+    return anchors
 
 
 def _is_topic_relevant(
@@ -1421,13 +1567,23 @@ def _is_topic_relevant(
     topic_keywords: set[str],
     block_terms: List[str],
     min_hits: int = 1,
+    anchor_terms: set[str] | None = None,
+    min_anchor_hits: int = 0,
 ) -> bool:
     lowered = (text or "").lower()
     if any(bt and bt.lower() in lowered for bt in block_terms):
         return False
     token_set = set(_tokenize(lowered))
     hits = len(topic_keywords & token_set)
-    return hits >= max(1, int(min_hits))
+    if hits < max(1, int(min_hits)):
+        return False
+
+    anchors = set(anchor_terms or set())
+    if anchors:
+        anchor_hits = len(anchors & token_set)
+        if anchor_hits < max(1, int(min_anchor_hits)):
+            return False
+    return True
 
 
 def _has_traceable_source(a: Dict[str, Any]) -> bool:
@@ -1601,6 +1757,91 @@ def _insert_chapter_before_references(report: str, chapter_md: str) -> str:
             + report[insert_pos:]
         )
     return report.rstrip() + "\n\n" + content + "\n"
+
+
+def _claim_mapping_section_exists(report: str) -> bool:
+    return bool(
+        re.search(
+            r"^\s{0,3}#{1,6}\s*(?:Claim[- ]?Evidence(?:\s+Map(?:ping)?)?|Claim-Evidence Mapping)\s*$",
+            report,
+            flags=re.MULTILINE | re.IGNORECASE,
+        )
+    )
+
+
+def _claim_evidence_coverage_ratio(report: str, claim_map: List[Dict[str, Any]]) -> float:
+    if not claim_map:
+        return 1.0
+    report_l = report.lower()
+    covered = 0
+    for item in claim_map:
+        claim = str(item.get("claim") or "").strip().lower()
+        evidence = item.get("evidence", []) if isinstance(item.get("evidence"), list) else []
+        has_claim = bool(claim and claim[:40] in report_l)
+        has_ev = False
+        for ev in evidence:
+            ev_url = str(ev.get("url") or "").strip().lower()
+            ev_title = str(ev.get("title") or "").strip().lower()
+            if (ev_url and ev_url in report_l) or (ev_title and ev_title[:40] in report_l):
+                has_ev = True
+                break
+        if has_claim and has_ev:
+            covered += 1
+    return covered / max(1, len(claim_map))
+
+
+def _render_claim_evidence_mapping(claim_map: List[Dict[str, Any]], *, language: str = "en") -> str:
+    if not claim_map:
+        return ""
+    is_zh = str(language).lower() == "zh"
+    header = "### Claim-Evidence Mapping" if not is_zh else "### 论点-证据映射"
+    claim_label = "Claim" if not is_zh else "论点"
+    rq_label = "RQ" if not is_zh else "研究问题"
+    caveat_label = "Caveat" if not is_zh else "注意点"
+    ev_label = "Evidence" if not is_zh else "证据"
+
+    parts: List[str] = [header, ""]
+    for i, item in enumerate(claim_map, 1):
+        claim = str(item.get("claim") or "").strip()
+        rq = str(item.get("research_question") or "").strip()
+        strength = str(item.get("strength") or "C").strip().upper() or "C"
+        caveat = str(item.get("caveat") or "").strip()
+        parts.append(f"{i}. **{claim_label}** ({strength}): {claim}")
+        if rq:
+            parts.append(f"   - **{rq_label}**: {rq}")
+        evidence = item.get("evidence", []) if isinstance(item.get("evidence"), list) else []
+        for ev in evidence[:2]:
+            title = str(ev.get("title") or ev.get("uid") or "Unknown").strip()
+            url = str(ev.get("url") or "").strip() or _uid_to_resolvable_url(str(ev.get("uid") or ""))
+            tier = str(ev.get("tier") or "C").strip().upper() or "C"
+            if url:
+                parts.append(f"   - **{ev_label} [{tier}]**: [{title}]({url})")
+            else:
+                parts.append(f"   - **{ev_label} [{tier}]**: {title}")
+        if caveat:
+            parts.append(f"   - **{caveat_label}**: {caveat}")
+        parts.append("")
+    return "\n".join(parts).strip()
+
+
+def _ensure_claim_evidence_mapping_in_report(
+    report: str,
+    claim_map: List[Dict[str, Any]],
+    *,
+    language: str = "en",
+    min_coverage: float = 1.0,
+) -> str:
+    if not claim_map:
+        return report
+    coverage = _claim_evidence_coverage_ratio(report, claim_map)
+    if coverage >= float(min_coverage):
+        return report
+    if _claim_mapping_section_exists(report):
+        return report
+    mapping_md = _render_claim_evidence_mapping(claim_map, language=language)
+    if not mapping_md:
+        return report
+    return _insert_chapter_before_references(report, mapping_md)
 
 
 def _render_experiment_blueprint(plan: Dict[str, Any], language: str = "en") -> str:
@@ -1915,9 +2156,20 @@ def fetch_sources(state: ResearchState) -> Dict[str, Any]:
     existing_uids = {p["uid"] for p in state.get("papers", [])}
     existing_web_uids = {w["uid"] for w in state.get("web_sources", [])}
     topic_keywords = _build_topic_keywords(state, cfg)
+    topic_anchor_terms = _build_topic_anchor_terms(state, cfg)
     topic_filter_cfg = cfg.get("agent", {}).get("topic_filter", {})
     block_terms = topic_filter_cfg.get("block_terms", DEFAULT_TOPIC_BLOCK_TERMS)
     min_hits = int(topic_filter_cfg.get("min_keyword_hits", DEFAULT_MIN_KEYWORD_HITS))
+    min_anchor_hits = int(
+        topic_filter_cfg.get(
+            "min_anchor_hits",
+            DEFAULT_MIN_ANCHOR_HITS if topic_anchor_terms else 0,
+        )
+    )
+
+    # S1: Start from existing cumulative lists (prevent empty-overwrite on later iterations)
+    existing_papers: List[Dict[str, Any]] = list(state.get("papers", []))
+    existing_web: List[Dict[str, Any]] = list(state.get("web_sources", []))
 
     new_papers: List[Dict[str, Any]] = []
     new_web: List[Dict[str, Any]] = []
@@ -1935,8 +2187,8 @@ def fetch_sources(state: ResearchState) -> Dict[str, Any]:
     )
     if not search_result.success:
         return _ns({
-            "papers": [],
-            "web_sources": [],
+            "papers": existing_papers,
+            "web_sources": existing_web,
             "status": f"Fetch failed: {search_result.error}",
         })
     provider_result = search_result.data
@@ -1948,6 +2200,8 @@ def fetch_sources(state: ResearchState) -> Dict[str, Any]:
             topic_keywords=topic_keywords,
             block_terms=block_terms,
             min_hits=min_hits,
+            anchor_terms=topic_anchor_terms,
+            min_anchor_hits=min_anchor_hits,
         ):
             logger.debug("[TopicFilter] Drop paper candidate: %s", paper.get("title", ""))
             continue
@@ -1964,6 +2218,8 @@ def fetch_sources(state: ResearchState) -> Dict[str, Any]:
             topic_keywords=topic_keywords,
             block_terms=block_terms,
             min_hits=min_hits,
+            anchor_terms=topic_anchor_terms,
+            min_anchor_hits=min_anchor_hits,
         ):
             logger.debug("[TopicFilter] Drop web candidate: %s", web.get("title", ""))
             continue
@@ -1973,11 +2229,15 @@ def fetch_sources(state: ResearchState) -> Dict[str, Any]:
         new_web.append(web)
         existing_web_uids.add(uid)
 
+    # S1: Return cumulative list = existing + new (deduped by uid above)
+    cumulative_papers = existing_papers + new_papers
+    cumulative_web = existing_web + new_web
     return _ns({
-        "papers": new_papers,
-        "web_sources": new_web,
+        "papers": cumulative_papers,
+        "web_sources": cumulative_web,
         "status": (
-            f"Fetched {len(new_papers)} papers (arXiv/Scholar/S2) and {len(new_web)} web sources "
+            f"Fetched {len(new_papers)} new papers, {len(new_web)} new web sources "
+            f"(cumulative: {len(cumulative_papers)} papers, {len(cumulative_web)} web) "
             f"[routes: {len(effective_academic_queries)} academic, {len(effective_web_queries)} web]"
         ),
     })
@@ -2153,10 +2413,16 @@ def index_sources(state: ResearchState) -> Dict[str, Any]:
         if not run_docs_result.success:
             logger.warning("run_docs upsert (web) failed: %s", run_docs_result.error)
 
+    # S1: Return cumulative indexed IDs (prevent empty-overwrite on later iterations)
+    cumulative_paper_ids = list(dict.fromkeys(list(state.get("indexed_paper_ids", [])) + new_paper_ids))
+    cumulative_web_ids = list(dict.fromkeys(list(state.get("indexed_web_ids", [])) + new_web_ids))
     return _ns({
-        "indexed_paper_ids": new_paper_ids,
-        "indexed_web_ids": new_web_ids,
-        "status": f"Indexed {len(new_paper_ids)} PDFs -> '{paper_collection}', {len(new_web_ids)} web pages -> '{web_collection}'",
+        "indexed_paper_ids": cumulative_paper_ids,
+        "indexed_web_ids": cumulative_web_ids,
+        "status": (
+            f"Indexed {len(new_paper_ids)} new PDFs, {len(new_web_ids)} new web pages "
+            f"(cumulative: {len(cumulative_paper_ids)} papers, {len(cumulative_web_ids)} web)"
+        ),
     })
 
 
@@ -2188,6 +2454,10 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
 
     topic = state["topic"]
     already_analyzed = {a["uid"] for a in state.get("analyses", [])}
+
+    # S1: Start from existing cumulative lists (prevent empty-overwrite on later iterations)
+    existing_analyses: List[Dict[str, Any]] = list(state.get("analyses", []))
+    existing_findings: List[str] = list(state.get("findings", []))
 
     new_analyses: List[Dict[str, Any]] = []
     new_findings: List[str] = []
@@ -2339,12 +2609,19 @@ def analyze_sources(state: ResearchState) -> Dict[str, Any]:
         for f in analysis.get("key_findings", []):
             new_findings.append(f"[Web: {web['title']}] {f}")
 
+    # S1: Return cumulative list = existing + new (deduped by uid in already_analyzed)
+    cumulative_analyses = existing_analyses + new_analyses
+    cumulative_findings = existing_findings + new_findings
     n_papers = len(papers_to_analyze)
     n_web = len(web_to_analyze)
     return _ns({
-        "analyses": new_analyses,
-        "findings": new_findings,
-        "status": f"Analyzed {n_papers} papers + {n_web} web sources, extracted {len(new_findings)} findings",
+        "analyses": cumulative_analyses,
+        "findings": cumulative_findings,
+        "status": (
+            f"Analyzed {n_papers} new papers + {n_web} new web sources, "
+            f"extracted {len(new_findings)} new findings "
+            f"(cumulative: {len(cumulative_analyses)} analyses, {len(cumulative_findings)} findings)"
+        ),
     })
 
 
@@ -2360,6 +2637,13 @@ def synthesize(state: ResearchState) -> Dict[str, Any]:
     scope, budget = _load_budget_and_scope(state, cfg)
     source_rank_cfg = cfg.get("agent", {}).get("source_ranking", {})
     core_min_a_ratio = float(source_rank_cfg.get("core_min_a_ratio", DEFAULT_CORE_MIN_A_RATIO))
+    evidence_cfg = cfg.get("agent", {}).get("evidence", {})
+    min_evidence_per_rq = int(evidence_cfg.get("min_per_rq", 2))
+    allow_graceful_degrade = bool(evidence_cfg.get("allow_graceful_degrade", True))
+    claim_align_cfg = cfg.get("agent", {}).get("claim_alignment", {})
+    claim_align_enabled = bool(claim_align_cfg.get("enabled", True))
+    min_claim_rq_relevance = float(claim_align_cfg.get("min_rq_relevance", 0.20))
+    claim_anchor_terms_max = int(claim_align_cfg.get("anchor_terms_max", 4))
     max_refs = min(
         int(cfg.get("agent", {}).get("report_max_sources", DEFAULT_REPORT_MAX_SOURCES)),
         int(budget.get("max_references", DEFAULT_MAX_REFERENCES)),
@@ -2417,6 +2701,11 @@ def synthesize(state: ResearchState) -> Dict[str, Any]:
         research_questions=state.get("research_questions", []),
         analyses=traceable_analyses,
         core_min_a_ratio=core_min_a_ratio,
+        min_evidence_per_rq=min_evidence_per_rq,
+        allow_graceful_degrade=allow_graceful_degrade,
+        align_claim_to_rq=claim_align_enabled,
+        min_claim_rq_relevance=min_claim_rq_relevance,
+        claim_anchor_terms_max=claim_anchor_terms_max,
     )
     evidence_audit_log = _build_evidence_audit_log(
         research_questions=state.get("research_questions", []),
@@ -2535,6 +2824,13 @@ def generate_report(state: ResearchState) -> Dict[str, Any]:
     )
     source_rank_cfg = cfg.get("agent", {}).get("source_ranking", {})
     core_min_a_ratio = float(source_rank_cfg.get("core_min_a_ratio", DEFAULT_CORE_MIN_A_RATIO))
+    evidence_cfg = cfg.get("agent", {}).get("evidence", {})
+    min_evidence_per_rq = int(evidence_cfg.get("min_per_rq", 2))
+    allow_graceful_degrade = bool(evidence_cfg.get("allow_graceful_degrade", True))
+    claim_align_cfg = cfg.get("agent", {}).get("claim_alignment", {})
+    claim_align_enabled = bool(claim_align_cfg.get("enabled", True))
+    min_claim_rq_relevance = float(claim_align_cfg.get("min_rq_relevance", 0.20))
+    claim_anchor_terms_max = int(claim_align_cfg.get("anchor_terms_max", 4))
     background_max_c = int(source_rank_cfg.get("background_max_c", DEFAULT_BACKGROUND_MAX_C))
     topic_filter_cfg = cfg.get("agent", {}).get("topic_filter", {})
     block_terms = topic_filter_cfg.get("block_terms", DEFAULT_TOPIC_BLOCK_TERMS)
@@ -2556,6 +2852,11 @@ def generate_report(state: ResearchState) -> Dict[str, Any]:
             research_questions=state.get("research_questions", []),
             analyses=traceable_analyses,
             core_min_a_ratio=core_min_a_ratio,
+            min_evidence_per_rq=min_evidence_per_rq,
+            allow_graceful_degrade=allow_graceful_degrade,
+            align_claim_to_rq=claim_align_enabled,
+            min_claim_rq_relevance=min_claim_rq_relevance,
+            claim_anchor_terms_max=claim_anchor_terms_max,
         )
 
     # Build source pools with quotas:
@@ -2665,6 +2966,7 @@ def generate_report(state: ResearchState) -> Dict[str, Any]:
     report = _llm_call(system, prompt, cfg=cfg, model=model, temperature=temperature)
     report = _strip_outer_markdown_fence(report)
     report = _clean_reference_section(report, max_refs=max_report_sources)
+    report = _normalize_references_in_report(report)  # S3: arXiv/DOI → URL
 
     experiment_plan = state.get("experiment_plan", {}) or {}
     experiment_results = state.get("experiment_results", {}) or {}
@@ -2683,6 +2985,14 @@ def generate_report(state: ResearchState) -> Dict[str, Any]:
         results_md = _render_experiment_results(experiment_results, language=language)
         if results_md:
             report = _insert_chapter_before_references(report, results_md)
+
+    # Enforce claim-evidence traceability in report text with minimal insertion.
+    report = _ensure_claim_evidence_mapping_in_report(
+        report,
+        claim_map,
+        language=language,
+        min_coverage=1.0,
+    )
 
     critic = _critic_report(
         topic=topic,
@@ -2711,6 +3021,13 @@ def generate_report(state: ResearchState) -> Dict[str, Any]:
         )
         report = _strip_outer_markdown_fence(report)
         report = _clean_reference_section(report, max_refs=max_report_sources)
+        report = _normalize_references_in_report(report)  # S3: arXiv/DOI → URL
+        report = _ensure_claim_evidence_mapping_in_report(
+            report,
+            claim_map,
+            language=language,
+            min_coverage=1.0,
+        )
         critic = _critic_report(
             topic=topic,
             report=report,

@@ -44,13 +44,27 @@ class ValidateRunOutputsTest(unittest.TestCase):
 
     def test_extract_reference_urls_dedupes(self) -> None:
         report = (
+            "## Experimental Blueprint\n"
+            "- Dataset https://github.com/example/data\n"
             "## References\n"
             "1. A https://example.com/a\n"
+            "* A2 https://example.com/a\n"
             "2. B (https://example.com/a)\n"
             "- C https://example.com/c.\n"
+            "+ D https://example.com/d,\n"
         )
         urls = v.extract_reference_urls(report)
-        self.assertEqual(urls, ["https://example.com/a", "https://example.com/c"])
+        self.assertEqual(urls, ["https://example.com/a", "https://example.com/c", "https://example.com/d"])
+
+    def test_extract_reference_urls_ignores_non_reference_sections(self) -> None:
+        report = (
+            "## Experimental Blueprint\n"
+            "- Dataset https://archive.ics.uci.edu/ml/datasets/ElectricityLoadDiagrams20112014\n"
+            "## References\n"
+            "1. Paper https://arxiv.org/abs/2110.08902v5\n"
+        )
+        urls = v.extract_reference_urls(report)
+        self.assertEqual(urls, ["https://arxiv.org/abs/2110.08902v5"])
 
     def test_section_budget_fail(self) -> None:
         state = self._minimal_state()
@@ -96,6 +110,28 @@ class ValidateRunOutputsTest(unittest.TestCase):
 
         def _exists(self: Path) -> bool:
             return self.name == expected.name
+
+        with patch("pathlib.Path.exists", new=_exists):
+            found = v._infer_report_path_from_state_path(s)
+        self.assertEqual(found, expected)
+
+    def test_infer_report_from_state_filename_run_scoped_fallback(self) -> None:
+        s = Path("outputs/research_state_20260220_170014.json")
+        expected = Path("outputs/run_20260220_170014/research_report.md")
+
+        def _exists(self: Path) -> bool:
+            return self == expected
+
+        with patch("pathlib.Path.exists", new=_exists):
+            found = v._infer_report_path_from_state_path(s)
+        self.assertEqual(found, expected)
+
+    def test_infer_report_from_run_state_filename(self) -> None:
+        s = Path("outputs/run_20260220_170014/research_state.json")
+        expected = Path("outputs/run_20260220_170014/research_report.md")
+
+        def _exists(self: Path) -> bool:
+            return self == expected
 
         with patch("pathlib.Path.exists", new=_exists):
             found = v._infer_report_path_from_state_path(s)

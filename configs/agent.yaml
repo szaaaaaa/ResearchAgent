@@ -25,13 +25,19 @@ retrieval:
   candidate_k: 30
   reranker_model: BAAI/bge-reranker-base
 llm:
-  model: gpt-5.2
+  model: gemini-3-flash-preview
   temperature: 0.3
 providers:
   llm:
-    backend: openai_chat
+    backend: gemini_chat
     retries: 1
     retry_backoff_sec: 1.0
+    # For Gemini:
+    # backend: gemini_chat
+    # fallback_model: gemini-2.0-flash
+    # gemini_api_key_env: GEMINI_API_KEY
+    # gemini_base_url: https://generativelanguage.googleapis.com
+    # gemini_timeout_sec: 60
   search:
     backend: default_search
     academic_order:
@@ -40,15 +46,15 @@ providers:
     - google_scholar
     web_order:
     - duckduckgo
-    query_all_academic: true
+    query_all_academic: false
     query_all_web: false
   retrieval:
     backend: default_retriever
 agent:
   seed: 42
-  max_iterations: 5
-  papers_per_query: 12
-  max_queries_per_iteration: 6
+  max_iterations: 3
+  papers_per_query: 5
+  max_queries_per_iteration: 3
   top_k_for_analysis: 12
   language: en
   report_max_sources: 80
@@ -63,7 +69,7 @@ agent:
   query_rewrite:
     min_per_rq: 6
     max_per_rq: 8
-    max_total_queries: 24
+    max_total_queries: 8
   dynamic_retrieval:
     simple_query_academic: true
     simple_query_pdf: true
@@ -100,10 +106,18 @@ agent:
   memory:
     max_findings_for_context: 40
     max_context_chars: 7000
+  evidence:
+    min_per_rq: 2
+    allow_graceful_degrade: true
+  claim_alignment:
+    enabled: true
+    min_rq_relevance: 0.2
+    anchor_terms_max: 4
   limits:
     analysis_web_content_max_chars: 15000
   topic_filter:
     min_keyword_hits: 2
+    min_anchor_hits: 1
     include_terms: []
     block_terms:
     - hanabi
@@ -115,18 +129,32 @@ agent:
   experiment_plan:
     enabled: true
     max_per_rq: 2
-    require_human_results: true
+    require_human_results: false
 sources:
+  pdf_download:
+    only_allowed_hosts: true
+    allowed_hosts:
+    - arxiv.org
+    - export.arxiv.org
+    - openreview.net
+    - openaccess.thecvf.com
+    - aclanthology.org
+    - proceedings.mlr.press
+    - jmlr.org
+    - ceur-ws.org
+    - papers.nips.cc
+    - neurips.cc
+    forbidden_host_ttl_sec: 1800
   arxiv:
     enabled: true
-    max_results_per_query: 15
+    max_results_per_query: 6
     download_pdf: true
   openalex:
     enabled: true
-    max_results_per_query: 20
+    max_results_per_query: 6
   google_scholar:
-    enabled: true
-    max_results_per_query: 15
+    enabled: false
+    max_results_per_query: 8
   google_cse:
     enabled: false
   bing:
@@ -151,11 +179,11 @@ sources:
     polite_delay_sec: 0.5
   semantic_scholar:
     enabled: true
-    max_results_per_query: 20
-    polite_delay_sec: 1.2
-    max_retries: 4
+    max_results_per_query: 5
+    polite_delay_sec: 3.0
+    max_retries: 1
     retry_backoff_sec: 1.5
 budget_guard:
   max_tokens: 5000000
-  max_api_calls: 2000
+  max_api_calls: 1500
   max_wall_time_sec: 7200

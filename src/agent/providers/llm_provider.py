@@ -47,8 +47,11 @@ def call_llm(
 
     retries = int(provider_cfg.get("retries", 0))
     backoff_sec = float(provider_cfg.get("retry_backoff_sec", 1.0))
-    fallback_model = str(provider_cfg.get("fallback_model", "gpt-4.1-mini")).strip() or "gpt-4.1-mini"
     backend_name = str(provider_cfg.get("backend", "openai_chat")).strip().lower()
+    fallback_model = str(provider_cfg.get("fallback_model", "")).strip()
+    if not fallback_model:
+        # Keep OpenAI historical behavior; avoid cross-provider fallback model mismatch by default.
+        fallback_model = "gpt-4.1-mini" if backend_name == "openai_chat" else resolved_model
     backend = create_llm_backend(cfg)
     backoff_used = False
 

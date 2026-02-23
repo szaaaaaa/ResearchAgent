@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 from urllib.parse import urlparse
 
+from src.agent.core.reference_utils import extract_reference_urls as _shared_extract_reference_urls
+
 
 REQUIRED_STATE_KEYS: Sequence[str] = (
     "topic",
@@ -141,31 +143,25 @@ def core_sections(report: str) -> List[str]:
 
 
 def extract_reference_urls(report: str) -> List[str]:
-    urls: List[str] = []
-    for line in report.splitlines():
-        s = line.strip()
-        if not s:
-            continue
-        if re.match(r"^(-|\d+\.)\s+", s):
-            for m in re.finditer(r"https?://[^\s\)\]]+", s):
-                urls.append(m.group(0).rstrip(".,"))
-    deduped = []
-    seen = set()
-    for u in urls:
-        if u in seen:
-            continue
-        seen.add(u)
-        deduped.append(u)
-    return deduped
+    """S2: Delegate to shared implementation for critic/validator consistency."""
+    return _shared_extract_reference_urls(report)
 
 
 def _infer_report_path_from_state_path(state_path: Path) -> Optional[Path]:
+    if state_path.name == "research_state.json":
+        candidate = state_path.parent / "research_report.md"
+        return candidate if candidate.exists() else None
+
     m = re.search(r"research_state_(\d{8}_\d{6})\.json$", state_path.name)
     if not m:
         return None
     report_name = f"research_report_{m.group(1)}.md"
-    candidate = state_path.parent / report_name
-    return candidate if candidate.exists() else None
+    legacy_candidate = state_path.parent / report_name
+    if legacy_candidate.exists():
+        return legacy_candidate
+
+    run_candidate = state_path.parent / f"run_{m.group(1)}" / "research_report.md"
+    return run_candidate if run_candidate.exists() else None
 
 
 def _claim_relevance_ratio(research_question: str, claim: str) -> float:

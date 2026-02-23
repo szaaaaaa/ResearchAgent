@@ -71,12 +71,25 @@ PowerShell：
 
 ```powershell
 $env:OPENAI_API_KEY="your_key"
+$env:GEMINI_API_KEY="your_key"  # providers.llm.backend=gemini_chat 鏃?
 ```
 
 Bash：
 
 ```bash
 export OPENAI_API_KEY="your_key"
+export GEMINI_API_KEY="your_key" # providers.llm.backend=gemini_chat 鏃?
+```
+
+Gemini 閰嶇疆绀轰緥锛?
+
+```yaml
+providers:
+  llm:
+    backend: gemini_chat
+    fallback_model: gemini-2.0-flash
+llm:
+  model: gemini-2.0-flash
 ```
 
 ## 快速入门
@@ -165,6 +178,8 @@ python -m unittest discover -s tests -v
 
 - `Missing OPENAI_API_KEY`
   - 先导出环境变量再运行。
+- `Missing GEMINI_API_KEY`
+  - 当 `providers.llm.backend=gemini_chat` 时，请设置 `GEMINI_API_KEY` 或 `GOOGLE_API_KEY`。
 - `ModuleNotFoundError`
   - 重新执行 `pip install -e .`。
 - 网络超时

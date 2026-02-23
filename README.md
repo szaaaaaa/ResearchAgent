@@ -83,18 +83,34 @@ pip install -e .
 
 ### 3. Configure API keys
 
-Set OpenAI key before running generation workflows.
+Set API key before running generation workflows.
 
 PowerShell:
 
 ```powershell
 $env:OPENAI_API_KEY="your_key"
+# If providers.llm.backend=gemini_chat
+$env:GEMINI_API_KEY="your_key"
 ```
 
 Bash:
 
 ```bash
 export OPENAI_API_KEY="your_key"
+# If providers.llm.backend=gemini_chat
+export GEMINI_API_KEY="your_key"
+```
+
+Gemini backend example (`configs/agent.yaml`):
+
+```yaml
+providers:
+  llm:
+    backend: gemini_chat
+    # optional: keep fallback within Gemini model family
+    fallback_model: gemini-2.0-flash
+llm:
+  model: gemini-2.0-flash
 ```
 
 ## Quick Start
@@ -183,6 +199,8 @@ python -m unittest discover -s tests -v
 
 - `Missing OPENAI_API_KEY`
   - Export `OPENAI_API_KEY` in your shell.
+- `Missing GEMINI_API_KEY`
+  - Export `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) when `providers.llm.backend=gemini_chat`.
 - `ModuleNotFoundError`
   - Reinstall with `pip install -e .`.
 - Timeout / network errors

@@ -129,8 +129,9 @@ class NodesFlowTest(unittest.TestCase):
         ) as dispatch_mock:
             out = nodes.fetch_sources(state)
 
-        self.assertEqual([p["uid"] for p in sget(out, "papers", [])], ["p-new"])
-        self.assertEqual([w["uid"] for w in sget(out, "web_sources", [])], ["w-new"])
+        # S1: cumulative semantics – existing items preserved, new items appended
+        self.assertEqual([p["uid"] for p in sget(out, "papers", [])], ["p-old", "p-new"])
+        self.assertEqual([w["uid"] for w in sget(out, "web_sources", [])], ["w-old", "w-new"])
         task = dispatch_mock.call_args.args[0]
         self.assertEqual(task.params["academic_queries"], ["qa"])
         self.assertEqual(task.params["web_queries"], ["qw", "qa", "qb"])

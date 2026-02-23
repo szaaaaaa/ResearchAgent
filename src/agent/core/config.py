@@ -31,6 +31,7 @@ DEFAULT_MAX_FINDINGS_FOR_CONTEXT = 20
 DEFAULT_MAX_CONTEXT_CHARS = 3500
 DEFAULT_ANALYSIS_WEB_CONTENT_MAX_CHARS = 15000
 DEFAULT_MIN_KEYWORD_HITS = 1
+DEFAULT_MIN_ANCHOR_HITS = 1
 DEFAULT_AGENT_SEED = 42
 DEFAULT_BG_MAX_TOKENS = 500_000
 DEFAULT_BG_MAX_API_CALLS = 200
@@ -81,6 +82,25 @@ DEFAULT_REWRITE_MAX_TOTAL_QUERIES = 24
 DEFAULT_EXPERIMENT_PLAN_ENABLED = True
 DEFAULT_EXPERIMENT_MAX_PER_RQ = 2
 DEFAULT_REQUIRE_HUMAN_EXPERIMENT_RESULTS = True
+DEFAULT_EVIDENCE_MIN_PER_RQ = 2
+DEFAULT_EVIDENCE_ALLOW_GRACEFUL_DEGRADE = True
+DEFAULT_CLAIM_ALIGNMENT_ENABLED = True
+DEFAULT_CLAIM_ALIGNMENT_MIN_RQ_RELEVANCE = 0.20
+DEFAULT_CLAIM_ALIGNMENT_ANCHOR_TERMS_MAX = 4
+DEFAULT_PDF_DOWNLOAD_ONLY_ALLOWED_HOSTS = True
+DEFAULT_PDF_DOWNLOAD_ALLOWED_HOSTS = [
+    "arxiv.org",
+    "export.arxiv.org",
+    "openreview.net",
+    "openaccess.thecvf.com",
+    "aclanthology.org",
+    "proceedings.mlr.press",
+    "jmlr.org",
+    "ceur-ws.org",
+    "papers.nips.cc",
+    "neurips.cc",
+]
+DEFAULT_PDF_FORBIDDEN_HOST_TTL_SEC = 1800.0
 
 
 def _to_bool(value: Any, default: bool) -> bool:
@@ -235,6 +255,9 @@ def normalize_and_validate_config(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
     topic_filter_cfg["min_keyword_hits"] = int(
         topic_filter_cfg.get("min_keyword_hits", DEFAULT_MIN_KEYWORD_HITS)
     )
+    topic_filter_cfg["min_anchor_hits"] = int(
+        topic_filter_cfg.get("min_anchor_hits", DEFAULT_MIN_ANCHOR_HITS)
+    )
     include_terms = topic_filter_cfg.get("include_terms", [])
     if not isinstance(include_terms, list):
         include_terms = []
@@ -255,11 +278,44 @@ def normalize_and_validate_config(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
         experiment_cfg.get("require_human_results"),
         DEFAULT_REQUIRE_HUMAN_EXPERIMENT_RESULTS,
     )
+    evidence_cfg = agent_cfg.setdefault("evidence", {})
+    evidence_cfg["min_per_rq"] = max(
+        1,
+        int(evidence_cfg.get("min_per_rq", DEFAULT_EVIDENCE_MIN_PER_RQ)),
+    )
+    evidence_cfg["allow_graceful_degrade"] = _to_bool(
+        evidence_cfg.get("allow_graceful_degrade"),
+        DEFAULT_EVIDENCE_ALLOW_GRACEFUL_DEGRADE,
+    )
+    claim_align_cfg = agent_cfg.setdefault("claim_alignment", {})
+    claim_align_cfg["enabled"] = _to_bool(
+        claim_align_cfg.get("enabled"),
+        DEFAULT_CLAIM_ALIGNMENT_ENABLED,
+    )
+    claim_align_cfg["min_rq_relevance"] = float(
+        claim_align_cfg.get("min_rq_relevance", DEFAULT_CLAIM_ALIGNMENT_MIN_RQ_RELEVANCE)
+    )
+    claim_align_cfg["anchor_terms_max"] = max(
+        1,
+        int(claim_align_cfg.get("anchor_terms_max", DEFAULT_CLAIM_ALIGNMENT_ANCHOR_TERMS_MAX)),
+    )
 
     sources_cfg = out.setdefault("sources", {})
     for source_name in ALL_SOURCES:
         s_cfg = sources_cfg.setdefault(source_name, {})
         s_cfg["enabled"] = _to_bool(s_cfg.get("enabled"), True)
+    pdf_dl_cfg = sources_cfg.setdefault("pdf_download", {})
+    pdf_dl_cfg["only_allowed_hosts"] = _to_bool(
+        pdf_dl_cfg.get("only_allowed_hosts"),
+        DEFAULT_PDF_DOWNLOAD_ONLY_ALLOWED_HOSTS,
+    )
+    pdf_dl_cfg["allowed_hosts"] = _normalized_order(
+        pdf_dl_cfg.get("allowed_hosts"),
+        DEFAULT_PDF_DOWNLOAD_ALLOWED_HOSTS,
+    )
+    pdf_dl_cfg["forbidden_host_ttl_sec"] = float(
+        pdf_dl_cfg.get("forbidden_host_ttl_sec", DEFAULT_PDF_FORBIDDEN_HOST_TTL_SEC)
+    )
 
     bg_cfg = out.setdefault("budget_guard", {})
     bg_cfg["max_tokens"] = int(bg_cfg.get("max_tokens", DEFAULT_BG_MAX_TOKENS))

@@ -20,14 +20,27 @@ class CoreConfigTest(unittest.TestCase):
         self.assertIn("seed", out["agent"])
         self.assertIn("topic_filter", out["agent"])
         self.assertIn("block_terms", out["agent"]["topic_filter"])
+        self.assertIn("min_anchor_hits", out["agent"]["topic_filter"])
         self.assertIn("experiment_plan", out["agent"])
         self.assertTrue(out["agent"]["experiment_plan"]["enabled"])
         self.assertEqual(out["agent"]["experiment_plan"]["max_per_rq"], 2)
         self.assertTrue(out["agent"]["experiment_plan"]["require_human_results"])
+        self.assertIn("evidence", out["agent"])
+        self.assertEqual(out["agent"]["evidence"]["min_per_rq"], 2)
+        self.assertTrue(out["agent"]["evidence"]["allow_graceful_degrade"])
+        self.assertIn("claim_alignment", out["agent"])
+        self.assertTrue(out["agent"]["claim_alignment"]["enabled"])
+        self.assertAlmostEqual(out["agent"]["claim_alignment"]["min_rq_relevance"], 0.2, places=6)
+        self.assertEqual(out["agent"]["claim_alignment"]["anchor_terms_max"], 4)
         self.assertIn("budget_guard", out)
         self.assertIn("max_tokens", out["budget_guard"])
         self.assertIn("max_api_calls", out["budget_guard"])
         self.assertIn("max_wall_time_sec", out["budget_guard"])
+        self.assertIn("pdf_download", out["sources"])
+        self.assertTrue(out["sources"]["pdf_download"]["only_allowed_hosts"])
+        self.assertIsInstance(out["sources"]["pdf_download"]["allowed_hosts"], list)
+        self.assertGreater(len(out["sources"]["pdf_download"]["allowed_hosts"]), 0)
+        self.assertGreater(out["sources"]["pdf_download"]["forbidden_host_ttl_sec"], 0.0)
 
     def test_normalize_bool_and_order(self) -> None:
         out = normalize_and_validate_config(
@@ -85,6 +98,71 @@ class CoreConfigTest(unittest.TestCase):
         self.assertFalse(out["agent"]["experiment_plan"]["enabled"])
         self.assertEqual(out["agent"]["experiment_plan"]["max_per_rq"], 4)
         self.assertFalse(out["agent"]["experiment_plan"]["require_human_results"])
+
+    def test_evidence_policy_config_normalized(self) -> None:
+        out = normalize_and_validate_config(
+            {
+                "agent": {
+                    "evidence": {
+                        "min_per_rq": "3",
+                        "allow_graceful_degrade": "0",
+                    }
+                }
+            }
+        )
+        self.assertEqual(out["agent"]["evidence"]["min_per_rq"], 3)
+        self.assertFalse(out["agent"]["evidence"]["allow_graceful_degrade"])
+
+    def test_claim_alignment_config_normalized(self) -> None:
+        out = normalize_and_validate_config(
+            {
+                "agent": {
+                    "claim_alignment": {
+                        "enabled": "0",
+                        "min_rq_relevance": "0.35",
+                        "anchor_terms_max": "6",
+                    }
+                }
+            }
+        )
+        claim_align = out["agent"]["claim_alignment"]
+        self.assertFalse(claim_align["enabled"])
+        self.assertAlmostEqual(claim_align["min_rq_relevance"], 0.35, places=6)
+        self.assertEqual(claim_align["anchor_terms_max"], 6)
+
+    def test_topic_filter_anchor_config_normalized(self) -> None:
+        out = normalize_and_validate_config(
+            {
+                "agent": {
+                    "topic_filter": {
+                        "min_keyword_hits": "2",
+                        "min_anchor_hits": "3",
+                        "include_terms": [" concept drift ", "prototype replay", ""],
+                    }
+                }
+            }
+        )
+        topic_filter = out["agent"]["topic_filter"]
+        self.assertEqual(topic_filter["min_keyword_hits"], 2)
+        self.assertEqual(topic_filter["min_anchor_hits"], 3)
+        self.assertEqual(topic_filter["include_terms"], ["concept drift", "prototype replay"])
+
+    def test_pdf_download_policy_config_normalized(self) -> None:
+        out = normalize_and_validate_config(
+            {
+                "sources": {
+                    "pdf_download": {
+                        "only_allowed_hosts": "0",
+                        "allowed_hosts": [" Arxiv.org ", "openreview.net", "arxiv.org", ""],
+                        "forbidden_host_ttl_sec": "1200",
+                    }
+                }
+            }
+        )
+        pdf_cfg = out["sources"]["pdf_download"]
+        self.assertFalse(pdf_cfg["only_allowed_hosts"])
+        self.assertEqual(pdf_cfg["allowed_hosts"], ["arxiv.org", "openreview.net"])
+        self.assertAlmostEqual(pdf_cfg["forbidden_host_ttl_sec"], 1200.0, places=6)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ Requires-Dist: langgraph>=0.2.0
 Requires-Dist: langchain-openai>=0.2.0
 Requires-Dist: langchain-core>=0.3.0
 Requires-Dist: openai>=1.0.0
+Requires-Dist: google-genai>=0.8.0
 Requires-Dist: chromadb>=0.4.0
 Requires-Dist: sentence-transformers>=2.2.0
 Requires-Dist: pymupdf>=1.23.0

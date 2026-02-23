@@ -106,6 +106,30 @@ class NodesHelpersTest(unittest.TestCase):
             )
         )
 
+    def test_is_topic_relevant_with_anchor_terms(self) -> None:
+        kws = {"concept", "drift", "forecasting"}
+        anchors = {"prototype", "replay"}
+        self.assertFalse(
+            nodes._is_topic_relevant(
+                text="Concept drift methods for forecasting",
+                topic_keywords=kws,
+                block_terms=[],
+                min_hits=1,
+                anchor_terms=anchors,
+                min_anchor_hits=1,
+            )
+        )
+        self.assertTrue(
+            nodes._is_topic_relevant(
+                text="Prototype replay for concept drift forecasting",
+                topic_keywords=kws,
+                block_terms=[],
+                min_hits=1,
+                anchor_terms=anchors,
+                min_anchor_hits=1,
+            )
+        )
+
     def test_uid_to_resolvable_url(self) -> None:
         self.assertEqual(
             nodes._uid_to_resolvable_url("arxiv:2401.12345"),
@@ -202,6 +226,97 @@ class NodesHelpersTest(unittest.TestCase):
         self.assertEqual(len(claims), 2)
         self.assertEqual(len(set(claims)), 2)
 
+    def test_build_claim_evidence_map_enforces_min_per_rq_with_arxiv_fallback(self) -> None:
+        analyses = [
+            {
+                "uid": "arxiv:1",
+                "title": "Paper A",
+                "summary": "Prototype replay improves drift recovery.",
+                "key_findings": ["Prototype replay improves drift recovery."],
+                "relevance_score": 0.9,
+                "limitations": [],
+                "source": "arxiv",
+            },
+            {
+                "uid": "arxiv:2",
+                "title": "Paper B",
+                "summary": "Embedding clustering stabilizes replay sampling.",
+                "key_findings": ["Embedding clustering stabilizes replay sampling."],
+                "relevance_score": 0.85,
+                "limitations": [],
+                "source": "arxiv",
+            },
+        ]
+        out = nodes._build_claim_evidence_map(
+            research_questions=["How to prioritize replay under concept drift?"],
+            analyses=analyses,
+            core_min_a_ratio=0.7,
+            min_evidence_per_rq=2,
+            allow_graceful_degrade=True,
+        )
+        self.assertEqual(len(out), 1)
+        self.assertGreaterEqual(len(out[0]["evidence"]), 2)
+
+    def test_build_claim_evidence_map_graceful_degrade_marks_caveat(self) -> None:
+        analyses = [
+            {
+                "uid": "arxiv:1",
+                "title": "Paper A",
+                "summary": "Prototype replay improves drift recovery.",
+                "key_findings": ["Prototype replay improves drift recovery."],
+                "relevance_score": 0.9,
+                "limitations": [],
+                "source": "arxiv",
+            }
+        ]
+        out = nodes._build_claim_evidence_map(
+            research_questions=["How to prioritize replay under concept drift?"],
+            analyses=analyses,
+            core_min_a_ratio=0.7,
+            min_evidence_per_rq=2,
+            allow_graceful_degrade=True,
+        )
+        self.assertEqual(len(out), 1)
+        self.assertEqual(len(out[0]["evidence"]), 1)
+        self.assertIn("Evidence below minimum (1/2)", out[0].get("caveat", ""))
+
+    def test_build_claim_evidence_map_aligns_claim_with_rq_tokens(self) -> None:
+        analyses = [
+            {
+                "uid": "arxiv:1",
+                "title": "Paper A",
+                "summary": "PMR mitigates catastrophic forgetting with prototype replay.",
+                "key_findings": ["PMR mitigates catastrophic forgetting with prototype replay."],
+                "relevance_score": 0.9,
+                "limitations": [],
+                "source": "arxiv",
+            },
+            {
+                "uid": "arxiv:2",
+                "title": "Paper B",
+                "summary": "Prototype replay improves robustness.",
+                "key_findings": ["Prototype replay improves robustness."],
+                "relevance_score": 0.8,
+                "limitations": [],
+                "source": "arxiv",
+            },
+        ]
+        rq = "How does low-bit quantization of latent embeddings affect precision of prototype selection?"
+        out = nodes._build_claim_evidence_map(
+            research_questions=[rq],
+            analyses=analyses,
+            core_min_a_ratio=0.7,
+            min_evidence_per_rq=2,
+            allow_graceful_degrade=True,
+            align_claim_to_rq=True,
+            min_claim_rq_relevance=0.2,
+            claim_anchor_terms_max=4,
+        )
+        claim = out[0]["claim"].lower()
+        self.assertTrue(claim.startswith("regarding "))
+        self.assertIn("quantization", claim)
+        self.assertIn("latent", claim)
+
     def test_compute_acceptance_metrics(self) -> None:
         empty = nodes._compute_acceptance_metrics(evidence_audit_log=[], report_critic={"issues": []})
         self.assertFalse(empty["a_ratio_pass"])
@@ -286,6 +401,36 @@ class NodesHelpersTest(unittest.TestCase):
         self.assertFalse(critic["pass"])
         self.assertTrue(any(x.startswith("experiment_plan:") for x in critic["issues"]))
         self.assertIn("experiment_results_missing", critic["issues"])
+        self.assertIn("experiment_results_missing", critic.get("soft_issues", []))
+
+    def test_critic_report_pending_experiment_results_is_soft_issue(self) -> None:
+        report = "## Intro\n\nTransformer replay methods.\n\n## References\n* Ref https://example.com\n"
+        valid_plan = {
+            "rq_experiments": [
+                {
+                    "research_question": "RQ1",
+                    "datasets": [{"name": "SST-2", "url": "https://example.com"}],
+                    "environment": {"python": "3.10", "cuda": "12.1", "pytorch": "2.3"},
+                    "hyperparameters": {"baseline": {"lr": 2e-5}, "search_space": {"lr": [1e-5, 5e-5]}},
+                    "run_commands": {"train": "python train.py", "eval": "python eval.py"},
+                    "evidence_refs": [{"uid": "arxiv:1234", "url": "https://arxiv.org/abs/1234"}],
+                }
+            ]
+        }
+        critic = nodes._critic_report(
+            topic="transformer replay",
+            report=report,
+            research_questions=[],
+            claim_map=[],
+            max_refs=10,
+            max_sections=5,
+            block_terms=[],
+            experiment_plan=valid_plan,
+            experiment_results={},
+        )
+        self.assertTrue(critic["pass"])
+        self.assertEqual(critic["issues"], ["experiment_results_missing"])
+        self.assertEqual(critic.get("soft_issues", []), ["experiment_results_missing"])
 
     def test_compute_acceptance_metrics_with_experiment_fields(self) -> None:
         plan = {
@@ -352,6 +497,47 @@ class NodesHelpersTest(unittest.TestCase):
         self.assertIn("## References", report)
         self.assertLess(report.find("## Experimental Blueprint"), report.find("## References"))
         self.assertLess(report.find("## Experimental Results"), report.find("## References"))
+
+    def test_ensure_claim_evidence_mapping_inserts_before_references(self) -> None:
+        report = "## Introduction\n\nBody.\n\n## References\n1. Ref https://example.com/ref\n"
+        claim_map = [
+            {
+                "research_question": "RQ1",
+                "claim": "Prototype replay improves recovery after drift.",
+                "strength": "A",
+                "caveat": "Dataset-dependent effect size.",
+                "evidence": [
+                    {
+                        "title": "Replay Study",
+                        "url": "https://arxiv.org/abs/1234.5678",
+                        "tier": "A",
+                    }
+                ],
+            }
+        ]
+        out = nodes._ensure_claim_evidence_mapping_in_report(report, claim_map)
+        self.assertIn("### Claim-Evidence Mapping", out)
+        self.assertIn("Prototype replay improves recovery after drift.", out)
+        self.assertIn("https://arxiv.org/abs/1234.5678", out)
+        self.assertLess(out.find("### Claim-Evidence Mapping"), out.find("## References"))
+
+    def test_ensure_claim_evidence_mapping_skips_when_already_covered(self) -> None:
+        report = (
+            "## Introduction\n\n"
+            "Prototype replay improves recovery after drift.\n"
+            "See https://arxiv.org/abs/1234.5678\n\n"
+            "## References\n1. Ref https://arxiv.org/abs/1234.5678\n"
+        )
+        claim_map = [
+            {
+                "research_question": "RQ1",
+                "claim": "Prototype replay improves recovery after drift.",
+                "strength": "A",
+                "evidence": [{"title": "Replay Study", "url": "https://arxiv.org/abs/1234.5678", "tier": "A"}],
+            }
+        ]
+        out = nodes._ensure_claim_evidence_mapping_in_report(report, claim_map)
+        self.assertEqual(out, report)
 
 
 if __name__ == "__main__":

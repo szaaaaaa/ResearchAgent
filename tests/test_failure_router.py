@@ -66,6 +66,21 @@ class FailureRouterTest(unittest.TestCase):
         self.assertEqual(payload["event"], "failure_routed")
         self.assertEqual(payload["action"], "abort")
 
+    def test_non_openai_backend_does_not_default_backoff_to_gpt_model(self) -> None:
+        backend = Mock()
+        backend.generate.side_effect = RuntimeError("content_policy refused")
+        cfg = {"providers": {"llm": {"backend": "gemini_chat", "retries": 0}}}
+        with patch("src.agent.providers.llm_provider.create_llm_backend", return_value=backend):
+            with self.assertRaises(RuntimeError):
+                llm_provider.call_llm(
+                    system_prompt="sys",
+                    user_prompt="usr",
+                    cfg=cfg,
+                    model="gemini-2.0-flash",
+                )
+        self.assertEqual(backend.generate.call_count, 1)
+        self.assertEqual(backend.generate.call_args.kwargs["model"], "gemini-2.0-flash")
+
     def test_dispatch_emits_failure_routed_metadata_on_executor_exception(self) -> None:
         class _BadExecutor:
             def supported_actions(self):
@@ -86,4 +101,3 @@ class FailureRouterTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
