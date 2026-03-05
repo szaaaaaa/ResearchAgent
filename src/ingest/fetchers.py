@@ -19,6 +19,7 @@ class PaperRecord:
     uid: str
     pdf_url: Optional[str]
     pdf_path: Optional[str]
+    source_path: Optional[str]
     abstract: Optional[str]
     fetched_at: datetime
 
@@ -39,7 +40,9 @@ def fetch_arxiv(
     query: str,
     max_results: int = 20,
     download: bool = False,
+    download_source: bool = False,
     papers_dir: str = "data/papers",
+    source_dir: str = "data/sources",
     polite_delay_sec: float = 1.0,
 ) -> List[PaperRecord]:
     
@@ -57,8 +60,17 @@ def fetch_arxiv(
         arxiv_id = entry.id.split("/")[-1]
         pdf_url = normalize_arxiv_pdf_url(_pick_arxiv_pdf_url(entry))
         pdf_path = None
+        source_path = None
         if download and pdf_url:
             pdf_path = download_pdf(pdf_url, papers_dir, make_uid(arxiv_id=arxiv_id), polite_delay_sec=polite_delay_sec)
+        if download_source:
+            try:
+                from src.ingest.latex_loader import download_arxiv_source
+
+                source = download_arxiv_source(arxiv_id, source_dir, polite_delay_sec=polite_delay_sec)
+                source_path = str(source.source_dir) if source else None
+            except Exception:
+                source_path = None
 
         record = PaperRecord(
             source="arxiv",
@@ -68,6 +80,7 @@ def fetch_arxiv(
             uid=make_uid(arxiv_id=arxiv_id),
             pdf_url=pdf_url,
             pdf_path=pdf_path,
+            source_path=source_path,
             abstract=entry.summary.strip() if hasattr(entry, "summary") else None,
             fetched_at=datetime.now(),
         )
@@ -106,11 +119,16 @@ def init_metadata_db(sqlite_path: str) -> None:
             year INTEGER,
             pdf_url TEXT,
             pdf_path TEXT,
+            source_path TEXT,
             abstract TEXT,
             fetched_at TEXT
         )
         """
     )
+    cur.execute("PRAGMA table_info(papers)")
+    cols = {row[1] for row in cur.fetchall()}
+    if "source_path" not in cols:
+        cur.execute("ALTER TABLE papers ADD COLUMN source_path TEXT")
     conn.commit()
     conn.close()
 
@@ -121,8 +139,8 @@ def upsert_papers(sqlite_path: str, records: List[PaperRecord]) -> None:
         cur.execute(
             """
             INSERT OR REPLACE INTO papers
-            (uid, source, title, authors, year, pdf_url, pdf_path, abstract, fetched_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (uid, source, title, authors, year, pdf_url, pdf_path, source_path, abstract, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 r.uid,
@@ -132,6 +150,7 @@ def upsert_papers(sqlite_path: str, records: List[PaperRecord]) -> None:
                 r.year,
                 r.pdf_url,
                 r.pdf_path,
+                r.source_path,
                 r.abstract,
                 r.fetched_at.isoformat(),
             ),
@@ -153,6 +172,8 @@ def fetch_arxiv_and_store(
     papers_dir: str,
     max_results: int = 20,
     download: bool = True,
+    download_source: bool = False,
+    source_dir: str = "data/sources",
     polite_delay_sec: float = 1.0,
 ) -> List[PaperRecord]:
     init_metadata_db(sqlite_path)
@@ -160,7 +181,9 @@ def fetch_arxiv_and_store(
         query,
         max_results=max_results,
         download=download,
+        download_source=download_source,
         papers_dir=papers_dir,
+        source_dir=source_dir,
         polite_delay_sec=polite_delay_sec,
     )
     upsert_papers(sqlite_path, recs)

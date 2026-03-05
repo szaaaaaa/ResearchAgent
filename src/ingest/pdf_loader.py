@@ -15,10 +15,19 @@ class LoadedPDF:
     num_pages: int
 
 
-def load_pdf_text(pdf_path: str, max_pages: Optional[int] = None) -> LoadedPDF:
+def load_pdf_text(
+    pdf_path: str,
+    max_pages: Optional[int] = None,
+    backend: str = "pymupdf",
+) -> LoadedPDF:
     p = Path(pdf_path)
     if not p.exists():
         raise FileNotFoundError(str(p))
+
+    if backend == "marker":
+        return _load_with_marker(str(p), max_pages=max_pages)
+    if backend != "pymupdf":
+        raise ValueError(f"Unsupported PDF backend: {backend}")
 
     doc = fitz.open(str(p))
     try:
@@ -34,3 +43,25 @@ def load_pdf_text(pdf_path: str, max_pages: Optional[int] = None) -> LoadedPDF:
         return LoadedPDF(pdf_path=str(p), text=text, num_pages=n)
     finally:
         doc.close()
+
+
+def _load_with_marker(pdf_path: str, max_pages: Optional[int] = None) -> LoadedPDF:
+    try:
+        from marker.converters.pdf import PdfConverter
+        from marker.models import create_model_dict
+        from marker.output import text_from_rendered
+    except Exception as exc:  # pragma: no cover - optional dependency path
+        raise RuntimeError(
+            "Missing dependency 'marker-pdf'. Install with: pip install -e ."
+        ) from exc
+
+    doc = fitz.open(pdf_path)
+    try:
+        total_pages = doc.page_count
+    finally:
+        doc.close()
+
+    converter = PdfConverter(artifact_dict=create_model_dict())
+    rendered = converter(str(pdf_path), page_range=(0, max_pages) if max_pages is not None else None)
+    text, _, _ = text_from_rendered(rendered)
+    return LoadedPDF(pdf_path=pdf_path, text=(text or "").strip(), num_pages=total_pages)

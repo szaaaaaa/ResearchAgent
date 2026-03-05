@@ -75,6 +75,80 @@ def retrieval_reranker_model(cfg: Dict[str, Any], override: str | None = None) -
     return raw if raw else None
 
 
+def retrieval_embedding_model(cfg: Dict[str, Any], override: str | None = None) -> str:
+    return pick_str(
+        override,
+        get_by_dotted(cfg, "retrieval.embedding_model"),
+        default="all-MiniLM-L6-v2",
+    )
+
+
+def retrieval_hybrid(cfg: Dict[str, Any], override: bool | None = None) -> bool:
+    if override is not None:
+        return override
+    raw = get_by_dotted(cfg, "retrieval.hybrid")
+    return as_bool(raw, False)
+
+
+def ingest_text_extraction(cfg: Dict[str, Any], override: str | None = None) -> str:
+    raw = pick_str(override, get_by_dotted(cfg, "ingest.text_extraction"), default="auto").lower()
+    if raw not in {"auto", "latex_first", "marker_only", "pymupdf_only"}:
+        return "auto"
+    return raw
+
+
+def ingest_latex_download_source(cfg: Dict[str, Any], override: bool | None = None) -> bool:
+    if override is not None:
+        return bool(override)
+    return as_bool(get_by_dotted(cfg, "ingest.latex.download_source"), True)
+
+
+def ingest_latex_source_dir(root: Path, cfg: Dict[str, Any], override: str | None = None) -> Path:
+    return resolve_path(
+        root,
+        pick_str(override, get_by_dotted(cfg, "ingest.latex.source_dir"), default="data/sources"),
+        cfg,
+    )
+
+
+def ingest_figure_enabled(cfg: Dict[str, Any], override: bool | None = None) -> bool:
+    if override is not None:
+        return bool(override)
+    return as_bool(get_by_dotted(cfg, "ingest.figure.enabled"), True)
+
+
+def ingest_figure_image_dir(root: Path, cfg: Dict[str, Any], override: str | None = None) -> Path:
+    return resolve_path(
+        root,
+        pick_str(override, get_by_dotted(cfg, "ingest.figure.image_dir"), default="data/figures"),
+        cfg,
+    )
+
+
+def ingest_figure_min_width(cfg: Dict[str, Any], override: int | None = None) -> int:
+    raw = override if override is not None else get_by_dotted(cfg, "ingest.figure.min_width")
+    return int(raw if raw is not None else 100)
+
+
+def ingest_figure_min_height(cfg: Dict[str, Any], override: int | None = None) -> int:
+    raw = override if override is not None else get_by_dotted(cfg, "ingest.figure.min_height")
+    return int(raw if raw is not None else 100)
+
+
+def ingest_figure_vlm_model(cfg: Dict[str, Any], override: str | None = None) -> str:
+    return pick_str(override, get_by_dotted(cfg, "ingest.figure.vlm_model"), default="gemini-2.5-flash")
+
+
+def ingest_figure_vlm_temperature(cfg: Dict[str, Any], override: float | None = None) -> float:
+    raw = override if override is not None else get_by_dotted(cfg, "ingest.figure.vlm_temperature")
+    return float(raw if raw is not None else 0.1)
+
+
+def ingest_figure_validation_min_entity_match(cfg: Dict[str, Any], override: float | None = None) -> float:
+    raw = override if override is not None else get_by_dotted(cfg, "ingest.figure.validation_min_entity_match")
+    return float(raw if raw is not None else 0.5)
+
+
 def openai_model(cfg: Dict[str, Any], override: str | None = None) -> str:
     return pick_str(
         override,

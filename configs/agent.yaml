@@ -5,6 +5,19 @@ paths:
   metadata_dir: ${project.data_dir}/metadata
   indexes_dir: ${project.data_dir}/indexes
   outputs_dir: outputs
+ingest:
+  text_extraction: auto
+  latex:
+    download_source: true
+    source_dir: ${project.data_dir}/sources
+  figure:
+    enabled: true
+    image_dir: ${project.data_dir}/figures
+    min_width: 100
+    min_height: 100
+    vlm_model: gemini-2.5-flash
+    vlm_temperature: 0.1
+    validation_min_entity_match: 0.5
 fetch:
   source: arxiv
   max_results: 10
@@ -21,9 +34,11 @@ index:
   chunk_size: 1200
   overlap: 200
 retrieval:
+  embedding_model: BAAI/bge-m3        # or all-MiniLM-L6-v2
+  hybrid: true                         # BM25 + dense RRF fusion
   top_k: 10
   candidate_k: 30
-  reranker_model: BAAI/bge-reranker-base
+  reranker_model: BAAI/bge-reranker-v2-m3
 llm:
   model: gemini-3-flash-preview
   temperature: 0.3

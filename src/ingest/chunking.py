@@ -1,8 +1,8 @@
 # src/ingest/chunking.py
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List
+from dataclasses import dataclass, field
+from typing import Any, Dict, List
 
 
 @dataclass
@@ -11,6 +11,7 @@ class Chunk:
     text: str
     start_char: int
     end_char: int
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 def chunk_text(text: str, *, chunk_size: int = 1200, overlap: int = 200) -> List[Chunk]:

@@ -26,6 +26,8 @@ def fetch_arxiv_records(
     papers_dir: str,
     max_results: int,
     download: bool,
+    download_source: bool,
+    source_dir: str,
     polite_delay_sec: float,
 ):
     return fetch_arxiv_and_store(
@@ -34,6 +36,8 @@ def fetch_arxiv_records(
         papers_dir=papers_dir,
         max_results=max_results,
         download=download,
+        download_source=download_source,
+        source_dir=source_dir,
         polite_delay_sec=polite_delay_sec,
     )
 

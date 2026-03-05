@@ -6,6 +6,19 @@ paths:
   metadata_dir: ${project.data_dir}/metadata
   indexes_dir: ${project.data_dir}/indexes
   outputs_dir: outputs
+ingest:
+  text_extraction: auto
+  latex:
+    download_source: true
+    source_dir: ${project.data_dir}/sources
+  figure:
+    enabled: true
+    image_dir: ${project.data_dir}/figures
+    min_width: 100
+    min_height: 100
+    vlm_model: gemini-2.5-flash
+    vlm_temperature: 0.1
+    validation_min_entity_match: 0.5
 
 fetch:
   source: arxiv
@@ -23,9 +36,11 @@ index:
   persist_dir: ${paths.indexes_dir}/chroma
 
 retrieval:
+  embedding_model: BAAI/bge-m3        # or all-MiniLM-L6-v2
+  hybrid: true                         # BM25 + dense RRF fusion
   top_k: 10
   candidate_k: 30
-  reranker_model: ""  # e.g. "BAAI/bge-reranker-base"
+  reranker_model: BAAI/bge-reranker-v2-m3
 
 openai:
   model: gpt-4.1-mini

@@ -28,6 +28,7 @@ from src.agent.infra.search.sources import (
     scrape_search_results,
 )
 from src.agent.plugins.registry import register_search_backend
+from src.common.rag_config import ingest_latex_download_source, ingest_latex_source_dir
 from src.ingest.fetchers import download_pdf
 
 logger = logging.getLogger(__name__)
@@ -145,6 +146,7 @@ def _paper_from_arxiv_record(record: Any, *, query: str) -> Dict[str, Any]:
         "abstract": record.abstract or "",
         "pdf_path": record.pdf_path,
         "pdf_url": record.pdf_url,
+        "source_path": getattr(record, "source_path", None),
         "url": _make_resolvable_url(uid),
         "source": "arxiv",
         "source_origins": ["arxiv"],
@@ -202,6 +204,7 @@ def _merge_paper(existing: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any
         "arxiv_id",
         "pdf_url",
         "pdf_path",
+        "source_path",
         "url",
     ):
         if not out.get(key) and new.get(key):
@@ -492,6 +495,8 @@ def _venue_first_pdf_fallback(
             papers_dir=papers_dir,
             max_results=max(3, min(8, int(arxiv_per_query))),
             download=allow_download,
+            download_source=False,
+            source_dir=str(ingest_latex_source_dir(Path("."), cfg)),
             polite_delay_sec=polite_delay_sec,
         )
     except Exception as e:  # pragma: no cover - network path
@@ -595,6 +600,8 @@ class DefaultSearchBackend:
             sqlite_path = str(
                 (root / cfg.get("metadata_store", {}).get("sqlite_path", "data/metadata/papers.sqlite")).resolve()
             )
+            source_dir = str(ingest_latex_source_dir(root, cfg))
+            download_source = ingest_latex_download_source(cfg)
             arxiv_enabled = _source_enabled(cfg, "arxiv")
             paper_pool: Dict[str, Dict[str, Any]] = {}
 
@@ -612,6 +619,8 @@ class DefaultSearchBackend:
                             papers_dir=papers_dir,
                             max_results=arxiv_per_query,
                             download=allow_download,
+                            download_source=download_source,
+                            source_dir=source_dir,
                             polite_delay_sec=delay,
                         )
                         for r in records:

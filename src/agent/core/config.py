@@ -101,6 +101,16 @@ DEFAULT_PDF_DOWNLOAD_ALLOWED_HOSTS = [
     "neurips.cc",
 ]
 DEFAULT_PDF_FORBIDDEN_HOST_TTL_SEC = 1800.0
+DEFAULT_INGEST_TEXT_EXTRACTION = "auto"
+DEFAULT_INGEST_LATEX_DOWNLOAD_SOURCE = True
+DEFAULT_INGEST_LATEX_SOURCE_DIR = "data/sources"
+DEFAULT_INGEST_FIGURE_ENABLED = True
+DEFAULT_INGEST_FIGURE_IMAGE_DIR = "data/figures"
+DEFAULT_INGEST_FIGURE_MIN_WIDTH = 100
+DEFAULT_INGEST_FIGURE_MIN_HEIGHT = 100
+DEFAULT_INGEST_FIGURE_VLM_MODEL = "gemini-2.5-flash"
+DEFAULT_INGEST_FIGURE_VLM_TEMPERATURE = 0.1
+DEFAULT_INGEST_FIGURE_VALIDATION_MIN_ENTITY_MATCH = 0.5
 
 
 def _to_bool(value: Any, default: bool) -> bool:
@@ -315,6 +325,44 @@ def normalize_and_validate_config(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
     )
     pdf_dl_cfg["forbidden_host_ttl_sec"] = float(
         pdf_dl_cfg.get("forbidden_host_ttl_sec", DEFAULT_PDF_FORBIDDEN_HOST_TTL_SEC)
+    )
+
+    ingest_cfg = out.setdefault("ingest", {})
+    text_extraction = str(ingest_cfg.get("text_extraction", DEFAULT_INGEST_TEXT_EXTRACTION)).strip().lower()
+    if text_extraction not in {"auto", "latex_first", "marker_only", "pymupdf_only"}:
+        text_extraction = DEFAULT_INGEST_TEXT_EXTRACTION
+    ingest_cfg["text_extraction"] = text_extraction
+
+    latex_cfg = ingest_cfg.setdefault("latex", {})
+    latex_cfg["download_source"] = _to_bool(
+        latex_cfg.get("download_source"),
+        DEFAULT_INGEST_LATEX_DOWNLOAD_SOURCE,
+    )
+    latex_cfg["source_dir"] = str(
+        latex_cfg.get("source_dir", DEFAULT_INGEST_LATEX_SOURCE_DIR)
+    ).strip() or DEFAULT_INGEST_LATEX_SOURCE_DIR
+
+    figure_cfg = ingest_cfg.setdefault("figure", {})
+    figure_cfg["enabled"] = _to_bool(
+        figure_cfg.get("enabled"),
+        DEFAULT_INGEST_FIGURE_ENABLED,
+    )
+    figure_cfg["image_dir"] = str(
+        figure_cfg.get("image_dir", DEFAULT_INGEST_FIGURE_IMAGE_DIR)
+    ).strip() or DEFAULT_INGEST_FIGURE_IMAGE_DIR
+    figure_cfg["min_width"] = int(figure_cfg.get("min_width", DEFAULT_INGEST_FIGURE_MIN_WIDTH))
+    figure_cfg["min_height"] = int(figure_cfg.get("min_height", DEFAULT_INGEST_FIGURE_MIN_HEIGHT))
+    figure_cfg["vlm_model"] = str(
+        figure_cfg.get("vlm_model", DEFAULT_INGEST_FIGURE_VLM_MODEL)
+    ).strip() or DEFAULT_INGEST_FIGURE_VLM_MODEL
+    figure_cfg["vlm_temperature"] = float(
+        figure_cfg.get("vlm_temperature", DEFAULT_INGEST_FIGURE_VLM_TEMPERATURE)
+    )
+    figure_cfg["validation_min_entity_match"] = float(
+        figure_cfg.get(
+            "validation_min_entity_match",
+            DEFAULT_INGEST_FIGURE_VALIDATION_MIN_ENTITY_MATCH,
+        )
     )
 
     bg_cfg = out.setdefault("budget_guard", {})

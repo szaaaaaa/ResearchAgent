@@ -41,6 +41,12 @@ class CoreConfigTest(unittest.TestCase):
         self.assertIsInstance(out["sources"]["pdf_download"]["allowed_hosts"], list)
         self.assertGreater(len(out["sources"]["pdf_download"]["allowed_hosts"]), 0)
         self.assertGreater(out["sources"]["pdf_download"]["forbidden_host_ttl_sec"], 0.0)
+        self.assertIn("ingest", out)
+        self.assertEqual(out["ingest"]["text_extraction"], "auto")
+        self.assertTrue(out["ingest"]["latex"]["download_source"])
+        self.assertTrue(out["ingest"]["figure"]["enabled"])
+        self.assertEqual(out["ingest"]["figure"]["min_width"], 100)
+        self.assertEqual(out["ingest"]["figure"]["vlm_model"], "gemini-2.5-flash")
 
     def test_normalize_bool_and_order(self) -> None:
         out = normalize_and_validate_config(
@@ -163,6 +169,39 @@ class CoreConfigTest(unittest.TestCase):
         self.assertFalse(pdf_cfg["only_allowed_hosts"])
         self.assertEqual(pdf_cfg["allowed_hosts"], ["arxiv.org", "openreview.net"])
         self.assertAlmostEqual(pdf_cfg["forbidden_host_ttl_sec"], 1200.0, places=6)
+
+    def test_ingest_config_normalized(self) -> None:
+        out = normalize_and_validate_config(
+            {
+                "ingest": {
+                    "text_extraction": "marker_only",
+                    "latex": {
+                        "download_source": "0",
+                        "source_dir": " custom_sources ",
+                    },
+                    "figure": {
+                        "enabled": "yes",
+                        "image_dir": " imgs ",
+                        "min_width": "120",
+                        "min_height": "140",
+                        "vlm_model": " gemini-2.0-flash ",
+                        "vlm_temperature": "0.25",
+                        "validation_min_entity_match": "0.75",
+                    },
+                }
+            }
+        )
+        ingest_cfg = out["ingest"]
+        self.assertEqual(ingest_cfg["text_extraction"], "marker_only")
+        self.assertFalse(ingest_cfg["latex"]["download_source"])
+        self.assertEqual(ingest_cfg["latex"]["source_dir"], "custom_sources")
+        self.assertTrue(ingest_cfg["figure"]["enabled"])
+        self.assertEqual(ingest_cfg["figure"]["image_dir"], "imgs")
+        self.assertEqual(ingest_cfg["figure"]["min_width"], 120)
+        self.assertEqual(ingest_cfg["figure"]["min_height"], 140)
+        self.assertEqual(ingest_cfg["figure"]["vlm_model"], "gemini-2.0-flash")
+        self.assertAlmostEqual(ingest_cfg["figure"]["vlm_temperature"], 0.25, places=6)
+        self.assertAlmostEqual(ingest_cfg["figure"]["validation_min_entity_match"], 0.75, places=6)
 
 
 if __name__ == "__main__":

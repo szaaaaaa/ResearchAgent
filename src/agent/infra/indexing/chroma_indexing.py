@@ -18,6 +18,10 @@ def index_pdf_documents(
     chunk_size: int,
     overlap: int,
     run_id: str,
+    embedding_model: str = "all-MiniLM-L6-v2",
+    build_bm25: bool = False,
+    root: Path | None = None,
+    cfg: dict | None = None,
 ):
     from src.workflows.traditional_rag import index_pdfs
 
@@ -28,6 +32,10 @@ def index_pdf_documents(
         chunk_size=chunk_size,
         overlap=overlap,
         run_id=run_id,
+        embedding_model=embedding_model,
+        build_bm25=build_bm25,
+        root=root,
+        cfg=cfg,
     )
 
 
@@ -38,6 +46,8 @@ def build_web_index(
     chunks: List[str],
     doc_id: str,
     run_id: str,
+    embedding_model: str = "all-MiniLM-L6-v2",
+    build_bm25: bool = False,
 ):
     from src.ingest.indexer import build_chroma_index
 
@@ -47,6 +57,8 @@ def build_web_index(
         chunks=chunks,
         doc_id=doc_id,
         run_id=run_id,
+        embedding_model=embedding_model,
+        build_bm25=build_bm25,
     )
 
 

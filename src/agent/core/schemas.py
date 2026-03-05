@@ -11,6 +11,7 @@ class PaperRecord(TypedDict, total=False):
     abstract: str | None
     pdf_path: str | None
     pdf_url: str | None
+    source_path: str | None
     url: str | None
     source: str
 
