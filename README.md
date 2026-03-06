@@ -10,6 +10,8 @@ An autonomous, local-first research agent that turns a topic string into a struc
 - [Architecture](#architecture)
   - [Agent Graph](#agent-graph)
   - [Layer Breakdown](#layer-breakdown)
+  - [Multimodal Ingest Pipeline](#multimodal-ingest-pipeline)
+  - [Hybrid Retrieval Pipeline](#hybrid-retrieval-pipeline)
   - [Data Sources](#data-sources)
   - [LLM Backends](#llm-backends)
   - [State Schema](#state-schema)
@@ -19,6 +21,7 @@ An autonomous, local-first research agent that turns a topic string into a struc
 - [Usage](#usage)
   - [Autonomous Agent Mode](#autonomous-agent-mode)
   - [Traditional RAG Mode](#traditional-rag-mode)
+  - [Runtime Modes](#runtime-modes)
   - [Experiment Blueprint (HITL)](#experiment-blueprint-hitl)
 - [Configuration Reference](#configuration-reference)
 - [Outputs](#outputs)
@@ -35,6 +38,19 @@ ResearchAgent supports two runnable modes:
 |------|----------|----------|
 | **Autonomous Agent** (recommended) | plan → fetch → index → analyze → synthesize → report | Deep, multi-iteration research with evidence tracking |
 | **Traditional RAG** | fetch → chunk → index → retrieve → answer | Quick single-shot Q&A over a fixed paper corpus |
+
+### Key Features
+
+- **Multi-source academic retrieval** — arXiv, OpenAlex, Semantic Scholar, Google Scholar, and web sources
+- **Multimodal ingest pipeline** — LaTeX source parsing, figure extraction, VLM-powered figure captioning (Gemini Vision)
+- **Hybrid retrieval** — Dense (BGE-M3 / MiniLM) + Sparse (BM25) with Reciprocal Rank Fusion and cross-encoder reranking
+- **Swappable embedding & reranker backends** — local sentence-transformers, OpenAI embeddings, or disabled mode
+- **Provider circuit breaker** — automatic detection and isolation of failing data sources with half-open probe recovery
+- **LangGraph checkpointing** — SQLite-based checkpoint/resume for long-running research sessions
+- **Runtime modes** — `lite`, `standard`, and `heavy` profiles to match available hardware
+- **Evidence auditing** — claim-evidence mapping and quality critic before report acceptance
+- **Experiment blueprints** — auto-generated experiment plans for ML/DL topics with optional HITL pause
+- **Budget enforcement** — hard limits on tokens, API calls, and wall-clock time
 
 ---
 
@@ -84,7 +100,7 @@ The autonomous mode is orchestrated as a directed graph via LangGraph:
                                 └─────────────────┘
 ```
 
-Each node is wrapped by `instrument_node`, which emits structured events to `events.log` and enforces the global `BudgetGuard` (token, API call, and wall-time limits).
+Each node is wrapped by `instrument_node`, which emits structured events to `events.log` and enforces the global `BudgetGuard` (token, API call, and wall-time limits). When checkpointing is enabled, state is automatically snapshotted after every node.
 
 ### Layer Breakdown
 
@@ -103,7 +119,10 @@ src/agent/
 │   ├── budget.py         # BudgetGuard: token / API-call / wall-time enforcement
 │   ├── interfaces.py     # Abstract base classes for LLM / search / retrieval
 │   ├── reference_utils.py# URL normalization and reference deduplication
-│   └── state_access.py   # Typed helpers for namespaced state reads/writes
+│   ├── state_access.py   # Typed helpers for namespaced state reads/writes
+│   ├── checkpointing.py  # SQLite checkpoint builder for LangGraph resume
+│   ├── circuit_breaker.py# Provider-level circuit breaker (closed → open → half-open)
+│   └── provider_health.py# ProviderHealth dataclass for circuit breaker state
 │
 ├── providers/            # Thin gateway layer (one file per service type)
 │   ├── llm_provider.py
@@ -117,7 +136,7 @@ src/agent/
 │   │   ├── openai_chat.py   # OpenAI Chat backend
 │   │   └── gemini_chat.py   # Google Gemini backend
 │   ├── search/
-│   │   └── default_search.py  # Multi-source fan-out search
+│   │   └── default_search.py  # Multi-source fan-out search with circuit breaker
 │   └── retrieval/
 │       └── default_retriever.py  # ChromaDB semantic retriever
 │
@@ -139,6 +158,60 @@ src/agent/
 - **Namespaced state.** `ResearchState` is partitioned into `planning`, `research`, `evidence`, and `report` sub-dicts to avoid key collisions across iterations.
 - **Budget enforcement.** Every LLM call goes through `BudgetGuard` which hard-stops if token, API-call, or wall-time limits are exceeded.
 - **Evidence auditing.** A `claim_evidence_map` and `evidence_audit_log` track which sources support which claims, enabling a quality critic step before report acceptance.
+- **Resilient fetching.** Provider-level circuit breakers automatically isolate failing sources (closed → open → half-open probe), preventing cascading failures.
+
+### Multimodal Ingest Pipeline
+
+```
+arXiv paper
+    │
+    ├─► LaTeX source available?
+    │       │
+    │       ├─ Yes ──► latex_loader.parse_latex()
+    │       │              ├─► Markdown text (math preserved as $...$ / $$...$$)
+    │       │              └─► LatexFigure list
+    │       │
+    │       └─ No ───► pdf_loader (Marker PDF / PyMuPDF fallback)
+    │                      └─► Plain text
+    │
+    ├─► Figure Extraction
+    │       ├─► extract_figures_from_latex()  (from source tarball)
+    │       └─► extract_figures_from_pdf()    (PyMuPDF image extraction)
+    │
+    ├─► Figure Captioning (Gemini Vision)
+    │       ├─► describe_figure()        — structured VLM description
+    │       └─► validate_description()   — entity match validation
+    │
+    ├─► chunking.chunk_text()
+    │       └─► List[Chunk]  (text chunks + figure chunks, deduplicated)
+    │
+    └─► indexer.build_chroma_index()
+            ├─► ChromaDB  (dense vectors)
+            └─► BM25 sidecar  (JSONL token index)
+```
+
+The LaTeX loader preserves inline math (`$...$`) and display math (`$$...$$`) intact, protecting formulas from text-cleaning rules. Figure captions are extracted with bounded windows (max 500 chars, 3 sentences) and reference contexts are limited to 800 chars to prevent noise.
+
+### Hybrid Retrieval Pipeline
+
+```
+User query
+    │
+    ├─► Dense retrieval (ChromaDB)
+    │       └─► Embedding backend: local_st | openai_embedding | disabled
+    │              Models: BGE-M3 (1024d), MiniLM (384d), or text-embedding-3-small
+    │
+    ├─► Sparse retrieval (BM25)
+    │       └─► bm25_index.search_bm25()
+    │
+    ├─► Reciprocal Rank Fusion (RRF)
+    │       └─► Merge dense + sparse rankings
+    │
+    ├─► Reranker backend: local_crossencoder | disabled
+    │       └─► Cross-encoder re-scoring (BGE-reranker-v2-m3)
+    │
+    └─► Top-K chunks → answerer → LLM response with citations
+```
 
 ### Data Sources
 
@@ -153,7 +226,7 @@ src/agent/
 | Bing | Web | ❌ disabled | `sources.bing` |
 | GitHub | Code repos | ❌ disabled | `sources.github` |
 
-Academic queries fan out to the `academic_order` list; web queries fan out to the `web_order` list. Results are deduplicated by URL/title before indexing.
+Academic queries fan out to the `academic_order` list; web queries fan out to the `web_order` list. Results are deduplicated by URL/title before indexing. Each provider is monitored by the circuit breaker — consecutive failures trigger automatic isolation.
 
 ### LLM Backends
 
@@ -229,14 +302,23 @@ ResearchAgent/
 │   ├── agent/                      # Autonomous agent (see Architecture above)
 │   ├── ingest/                     # Data ingestion helpers
 │   │   ├── fetchers.py             # PDF + web download
-│   │   ├── pdf_loader.py           # PDF text extraction
+│   │   ├── pdf_loader.py           # PDF text extraction (Marker / PyMuPDF)
+│   │   ├── latex_loader.py         # arXiv LaTeX source → text + figures (math-safe)
+│   │   ├── figure_extractor.py     # Extract figures from PDF / LaTeX
+│   │   ├── figure_captioner.py     # VLM figure captioning (Gemini Vision)
 │   │   ├── chunking.py             # Text chunking
 │   │   ├── indexer.py              # Index builder
 │   │   └── web_fetcher.py          # Web page scraping
-│   ├── rag/                        # Traditional RAG pipeline
-│   │   ├── retriever.py
-│   │   └── answerer.py
-│   ├── workflows/                  # Legacy / standalone workflows
+│   ├── rag/                        # Retrieval pipeline
+│   │   ├── embeddings.py           # Embedding dispatcher
+│   │   ├── embedding_backends.py   # Backend implementations (local_st / openai / disabled)
+│   │   ├── reranker_backends.py    # Reranker implementations (crossencoder / disabled)
+│   │   ├── bm25_index.py           # BM25 sidecar index (JSONL)
+│   │   ├── retriever.py            # Hybrid retrieval + RRF + reranker
+│   │   ├── answerer.py             # LLM answer generation
+│   │   └── cite_prompt.py          # Citation prompt templates
+│   ├── workflows/                  # End-to-end workflows
+│   │   └── traditional_rag.py      # index_pdfs() → answer_question()
 │   └── common/                     # Shared utilities
 │       ├── arg_utils.py
 │       ├── cli_utils.py
@@ -245,12 +327,15 @@ ResearchAgent/
 │       ├── report_utils.py
 │       └── runtime_utils.py
 ├── tests/                          # Unit + contract tests
+├── docs/                           # Documentation
 ├── data/                           # Local data (gitignored)
 │   ├── papers/                     # Downloaded PDFs
+│   ├── sources/                    # arXiv LaTeX source tarballs
+│   ├── figures/                    # Extracted figure images
 │   ├── metadata/                   # SQLite metadata store
 │   └── indexes/chroma/             # ChromaDB vector index
 ├── outputs/                        # Agent run outputs
-└── pyproject.toml / setup.cfg      # Package configuration
+└── pyproject.toml                  # Package configuration
 ```
 
 ---
@@ -365,9 +450,10 @@ python -m scripts.run_agent --topic "retrieval augmented generation"
 The agent will:
 1. Generate research questions and search queries
 2. Fetch papers from arXiv, OpenAlex, and Semantic Scholar
-3. Index and analyze each source
-4. Synthesize findings across multiple iterations
-5. Write a final cited report
+3. Extract text, figures, and LaTeX math from each paper
+4. Index and analyze each source with hybrid retrieval
+5. Synthesize findings across multiple iterations
+6. Write a final cited report
 
 ### Step 6 — Read the report
 
@@ -387,7 +473,7 @@ Open `outputs/research_report_<timestamp>.md` in any Markdown viewer.
 **Speed tips for a first run:**
 
 ```bash
-# Faster: fewer papers, one iteration
+# Faster: fewer papers, one iteration, lite mode
 python -m scripts.run_agent --topic "RAG" --max_iter 1 --papers_per_query 3 --no-scrape
 
 # Chinese report
@@ -463,6 +549,24 @@ One-command flow:
 python -m scripts.run_mvp --query "retrieval augmented generation"
 ```
 
+### Runtime Modes
+
+Three runtime modes control the resource footprint via `retrieval.runtime_mode` in config:
+
+| Mode | Embedding | Reranker | PDF Extraction | Figures | Best For |
+|------|-----------|----------|----------------|---------|----------|
+| `lite` | Remote (OpenAI) | Disabled | PyMuPDF only | Disabled | Laptops, CI, quick runs |
+| `standard` | Local (BGE-M3) | Local (CrossEncoder) | Auto (Marker → PyMuPDF) | Enabled | Default development |
+| `heavy` | Local (BGE-M3) | Local (CrossEncoder) | Marker | Enabled + VLM | Full quality, GPU recommended |
+
+```yaml
+# configs/agent.yaml
+retrieval:
+  runtime_mode: standard    # lite | standard | heavy
+  embedding_backend: local_st
+  reranker_backend: local_crossencoder
+```
+
 ### Experiment Blueprint (HITL)
 
 For ML/DL/CV/NLP/RL topics, the agent automatically generates an `experiment_plan` chapter with:
@@ -481,7 +585,7 @@ agent:
     require_human_results: true
 ```
 
-The run pauses at `ingest_experiment_results` (returns `END`) and waits for human-supplied results. Resume by injecting `experiment_results` into the saved state and re-invoking the graph.
+The run pauses at `ingest_experiment_results` (returns `END`) and waits for human-supplied results. When checkpointing is enabled, you can resume the run later by providing the same `run_id`.
 
 **With `require_human_results: false`** (default):
 
@@ -545,6 +649,16 @@ agent:
     max_per_rq: 2
     require_human_results: false
 
+ingest:
+  text_extraction: auto      # auto | marker | pymupdf
+  latex:
+    download_source: true
+  figure:
+    enabled: true
+    vlm_model: gemini-2.5-flash
+    vlm_temperature: 0.1
+    validation_min_entity_match: 0.5
+
 sources:
   arxiv:
     enabled: true
@@ -567,9 +681,15 @@ index:
   overlap: 200
 
 retrieval:
+  runtime_mode: standard     # lite | standard | heavy
+  embedding_backend: local_st  # local_st | openai_embedding | disabled
+  embedding_model: BAAI/bge-m3
+  remote_embedding_model: text-embedding-3-small
+  hybrid: true
   top_k: 10
   candidate_k: 30
-  reranker_model: BAAI/bge-reranker-base
+  reranker_backend: local_crossencoder  # local_crossencoder | disabled
+  reranker_model: BAAI/bge-reranker-v2-m3
 
 budget_guard:
   max_tokens: 5000000
@@ -602,7 +722,10 @@ Convenience copies are also written to `outputs/`:
 ## Testing
 
 ```bash
-# All tests
+# All tests (pytest)
+pytest tests/ -v
+
+# All tests (unittest)
 python -m unittest discover -s tests -v
 
 # Smoke test (no API calls)
@@ -623,12 +746,15 @@ python -m scripts.validate_run_outputs outputs/run_<timestamp>/
 | `ModuleNotFoundError` | Re-run `pip install -e .` |
 | Network timeout / connection error | Check proxy/firewall settings |
 | Empty retrieval results | Build the index first: `python -m scripts.build_index` |
-| Slow execution | Use `--no-scrape`, reduce `--papers_per_query`, reduce `--max_iter` |
+| Slow execution | Use `--no-scrape`, reduce `--papers_per_query`, reduce `--max_iter`, or switch to `lite` runtime mode |
 | Report missing citations | Increase `evidence.min_per_rq` or add more sources |
+| Out of memory (embedding/reranker) | Switch to `lite` mode: `retrieval.runtime_mode: lite` |
+| Provider keeps failing | Check `events.log` for circuit breaker events; increase `sources.<provider>.polite_delay_sec` |
 
 ---
 
 ## Documents
 
 - Chinese guide: [`README.zh-CN.md`](README.zh-CN.md)
+- Architecture details: [`docs/construction.md`](docs/construction.md)
 - Refactor details: [`REFACTOR_README.md`](REFACTOR_README.md)

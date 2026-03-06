@@ -10,6 +10,8 @@
 - [系统架构](#系统架构)
   - [Agent 图结构](#agent-图结构)
   - [分层设计](#分层设计)
+  - [多模态摄取管道](#多模态摄取管道)
+  - [混合检索管道](#混合检索管道)
   - [数据源](#数据源)
   - [LLM 后端](#llm-后端)
   - [状态 Schema](#状态-schema)
@@ -19,6 +21,7 @@
 - [使用方法](#使用方法)
   - [自主 Agent 模式](#自主-agent-模式)
   - [传统 RAG 模式](#传统-rag-模式)
+  - [运行模式](#运行模式)
   - [实验蓝图（HITL）](#实验蓝图hitl)
 - [配置参考](#配置参考)
 - [运行输出](#运行输出)
@@ -35,6 +38,19 @@ ResearchAgent 支持两种运行模式：
 |------|------|----------|
 | **自主 Agent 模式**（推荐） | 规划 → 抓取 → 建索引 → 分析 → 综合 → 生成报告 | 深度、多轮迭代研究，含证据溯源 |
 | **传统 RAG 模式** | 抓取 → 切分 → 建索引 → 检索 → 生成回答 | 对固定论文集的快速单轮问答 |
+
+### 核心特性
+
+- **多源学术检索** — arXiv、OpenAlex、Semantic Scholar、Google Scholar 及网页来源
+- **多模态摄取管道** — LaTeX 源码解析、图表提取、VLM 图表描述（Gemini Vision）
+- **混合检索** — 稠密检索（BGE-M3 / MiniLM）+ 稀疏检索（BM25），RRF 融合 + 交叉编码器重排
+- **可切换 Embedding 与 Reranker 后端** — 本地 sentence-transformers、OpenAI Embedding 或禁用模式
+- **Provider 熔断器** — 自动检测并隔离失败的数据源，支持半开探测恢复
+- **LangGraph 检查点** — 基于 SQLite 的检查点/恢复机制，支持长时间运行中断续跑
+- **运行模式** — `lite`、`standard`、`heavy` 三种配置，适配不同硬件环境
+- **证据审计** — 声明-证据映射和报告生成前的质量 Critic 检查
+- **实验蓝图** — 自动为 ML/DL 主题生成实验方案，可选 HITL 暂停等待人工结果
+- **预算强制执行** — Token、API 调用次数和运行时长硬限制
 
 ---
 
@@ -84,15 +100,15 @@ ResearchAgent 支持两种运行模式：
                                 └─────────────────┘
 ```
 
-每个节点都由 `instrument_node` 包裹，写入结构化事件到 `events.log`，并受全局 `BudgetGuard` 约束（令牌数、API 调用次数、运行时长上限）。
+每个节点都由 `instrument_node` 包裹，写入结构化事件到 `events.log`，并受全局 `BudgetGuard` 约束（令牌数、API 调用次数、运行时长上限）。启用检查点后，每个节点完成后会自动快照状态。
 
 **各节点职责：**
 
 | 节点 | 职责 |
 |------|------|
 | `plan_research` | 生成研究问题（RQ）、扩写检索查询、按来源路由查询 |
-| `fetch_sources` | 并发抓取 arXiv / OpenAlex / Semantic Scholar / Web，下载 PDF |
-| `index_sources` | 切分文本，写入 ChromaDB 向量索引，去重 |
+| `fetch_sources` | 并发抓取 arXiv / OpenAlex / Semantic Scholar / Web，下载 PDF，熔断器自动隔离故障源 |
+| `index_sources` | 切分文本，写入 ChromaDB 向量索引，提取图表并生成 VLM 描述，去重 |
 | `analyze_sources` | LLM 逐源分析：摘要、关键发现、方法论、可信度、相关性 |
 | `synthesize` | 跨源综合，更新 memory_summary，构建 claim_evidence_map |
 | `recommend_experiments` | 检测是否为 ML/DL 领域，生成实验蓝图（数据集、环境、超参） |
@@ -117,7 +133,10 @@ src/agent/
 │   ├── budget.py         # BudgetGuard：令牌 / API 调用 / 时长强制限制
 │   ├── interfaces.py     # LLM / Search / Retrieval 抽象基类
 │   ├── reference_utils.py# URL 规范化与引用去重
-│   └── state_access.py   # 命名空间状态读写工具
+│   ├── state_access.py   # 命名空间状态读写工具
+│   ├── checkpointing.py  # SQLite 检查点构建器，支持 LangGraph 断点续跑
+│   ├── circuit_breaker.py# Provider 级熔断器（closed → open → half-open）
+│   └── provider_health.py# ProviderHealth 数据类，熔断器状态表示
 │
 ├── providers/            # 薄网关层（每类服务一个文件）
 │   ├── llm_provider.py
@@ -131,7 +150,7 @@ src/agent/
 │   │   ├── openai_chat.py    # OpenAI Chat 后端
 │   │   └── gemini_chat.py    # Google Gemini 后端
 │   ├── search/
-│   │   └── default_search.py # 多源扇出搜索
+│   │   └── default_search.py # 多源扇出搜索（含熔断器）
 │   └── retrieval/
 │       └── default_retriever.py  # ChromaDB 语义检索
 │
@@ -153,6 +172,60 @@ src/agent/
 - **命名空间状态。** `ResearchState` 分为 `planning`、`research`、`evidence`、`report` 四个子字典，避免跨迭代 key 冲突。
 - **预算强制执行。** 所有 LLM 调用均经过 `BudgetGuard`，超出令牌、API 调用或时长上限时立即终止。
 - **证据审计。** `claim_evidence_map` 与 `evidence_audit_log` 追踪每条声明对应的来源，报告生成前执行质量 critic 步骤。
+- **弹性抓取。** Provider 级熔断器自动隔离故障源（closed → open → half-open 探测），防止级联失败。
+
+### 多模态摄取管道
+
+```
+arXiv 论文
+    │
+    ├─► 有 LaTeX 源码？
+    │       │
+    │       ├─ 有 ──► latex_loader.parse_latex()
+    │       │              ├─► Markdown 文本（数学公式保留 $...$ / $$...$$）
+    │       │              └─► LatexFigure 列表
+    │       │
+    │       └─ 无 ───► pdf_loader（Marker PDF / PyMuPDF 降级）
+    │                      └─► 纯文本
+    │
+    ├─► 图表提取
+    │       ├─► extract_figures_from_latex()（从源码 tarball）
+    │       └─► extract_figures_from_pdf()（PyMuPDF 图片提取）
+    │
+    ├─► 图表描述（Gemini Vision）
+    │       ├─► describe_figure()        — 结构化 VLM 描述
+    │       └─► validate_description()   — 实体匹配验证
+    │
+    ├─► chunking.chunk_text()
+    │       └─► List[Chunk]（文本 chunk + 图表 chunk，已去重）
+    │
+    └─► indexer.build_chroma_index()
+            ├─► ChromaDB（稠密向量）
+            └─► BM25 sidecar（JSONL 词频索引）
+```
+
+LaTeX 加载器保留行内公式（`$...$`）和行间公式（`$$...$$`），保护数学表达式不被文本清洗破坏。图表 caption 使用有界窗口提取（最大 500 字符、3 句），引用上下文限制为 800 字符以避免噪声。
+
+### 混合检索管道
+
+```
+用户查询
+    │
+    ├─► 稠密检索（ChromaDB）
+    │       └─► Embedding 后端：local_st | openai_embedding | disabled
+    │              模型：BGE-M3 (1024d)、MiniLM (384d) 或 text-embedding-3-small
+    │
+    ├─► 稀疏检索（BM25）
+    │       └─► bm25_index.search_bm25()
+    │
+    ├─► 倒数排名融合（RRF）
+    │       └─► 合并稠密 + 稀疏排名
+    │
+    ├─► Reranker 后端：local_crossencoder | disabled
+    │       └─► 交叉编码器重新打分（BGE-reranker-v2-m3）
+    │
+    └─► Top-K chunks → answerer → LLM 带引用回答
+```
 
 ### 数据源
 
@@ -167,7 +240,7 @@ src/agent/
 | Bing | 网页 | ❌ 禁用 | `sources.bing` |
 | GitHub | 代码仓库 | ❌ 禁用 | `sources.github` |
 
-学术查询按 `academic_order` 顺序扇出，网页查询按 `web_order` 顺序扇出。建索引前按 URL/标题去重。
+学术查询按 `academic_order` 顺序扇出，网页查询按 `web_order` 顺序扇出。建索引前按 URL/标题去重。每个 provider 受熔断器监控——连续失败会触发自动隔离。
 
 ### LLM 后端
 
@@ -243,14 +316,23 @@ ResearchAgent/
 │   ├── agent/                      # 自主 Agent（见架构部分）
 │   ├── ingest/                     # 数据摄取工具
 │   │   ├── fetchers.py             # PDF + 网页下载
-│   │   ├── pdf_loader.py           # PDF 文本提取
+│   │   ├── pdf_loader.py           # PDF 文本提取（Marker / PyMuPDF）
+│   │   ├── latex_loader.py         # arXiv LaTeX 源码 → 文本 + 图表（数学安全）
+│   │   ├── figure_extractor.py     # 从 PDF / LaTeX 提取图表
+│   │   ├── figure_captioner.py     # VLM 图表描述（Gemini Vision）
 │   │   ├── chunking.py             # 文本切分
 │   │   ├── indexer.py              # 索引构建
 │   │   └── web_fetcher.py          # 网页抓取
-│   ├── rag/                        # 传统 RAG 流程
-│   │   ├── retriever.py
-│   │   └── answerer.py
-│   ├── workflows/                  # 传统 / 独立流程
+│   ├── rag/                        # 检索管道
+│   │   ├── embeddings.py           # Embedding 分发器
+│   │   ├── embedding_backends.py   # 后端实现（local_st / openai / disabled）
+│   │   ├── reranker_backends.py    # Reranker 实现（crossencoder / disabled）
+│   │   ├── bm25_index.py           # BM25 边车索引（JSONL）
+│   │   ├── retriever.py            # 混合检索 + RRF + 重排
+│   │   ├── answerer.py             # LLM 回答生成
+│   │   └── cite_prompt.py          # 引用提示词模板
+│   ├── workflows/                  # 端到端流程
+│   │   └── traditional_rag.py      # index_pdfs() → answer_question()
 │   └── common/                     # 通用工具
 │       ├── arg_utils.py
 │       ├── cli_utils.py
@@ -259,12 +341,15 @@ ResearchAgent/
 │       ├── report_utils.py
 │       └── runtime_utils.py
 ├── tests/                          # 单元与契约测试
+├── docs/                           # 文档
 ├── data/                           # 本地数据（已 gitignore）
 │   ├── papers/                     # 下载的 PDF
+│   ├── sources/                    # arXiv LaTeX 源码 tarball
+│   ├── figures/                    # 提取的图表图片
 │   ├── metadata/                   # SQLite 元数据库
 │   └── indexes/chroma/             # ChromaDB 向量索引
 ├── outputs/                        # Agent 运行产物
-└── pyproject.toml / setup.cfg      # 包配置
+└── pyproject.toml                  # 包配置
 ```
 
 ---
@@ -379,9 +464,10 @@ python -m scripts.run_agent --topic "retrieval augmented generation"
 Agent 会自动完成以下步骤：
 1. 生成研究问题和检索查询
 2. 从 arXiv、OpenAlex、Semantic Scholar 抓取论文
-3. 建立向量索引并逐源分析
-4. 跨源综合，多轮迭代
-5. 输出带引用的完整研究报告
+3. 提取文本、图表和 LaTeX 数学公式
+4. 建立混合索引并逐源分析
+5. 跨源综合，多轮迭代
+6. 输出带引用的完整研究报告
 
 ### 第六步 — 查看报告
 
@@ -477,6 +563,24 @@ python -m scripts.demo_query --query "关键贡献是什么？" --top_k 8
 python -m scripts.run_mvp --query "retrieval augmented generation"
 ```
 
+### 运行模式
+
+三种运行模式通过 `retrieval.runtime_mode` 控制资源占用：
+
+| 模式 | Embedding | Reranker | PDF 提取 | 图表 | 适用场景 |
+|------|-----------|----------|----------|------|----------|
+| `lite` | 远程（OpenAI） | 禁用 | 仅 PyMuPDF | 禁用 | 笔记本、CI、快速运行 |
+| `standard` | 本地（BGE-M3） | 本地（CrossEncoder） | 自动（Marker → PyMuPDF） | 启用 | 默认开发环境 |
+| `heavy` | 本地（BGE-M3） | 本地（CrossEncoder） | Marker | 启用 + VLM | 完整质量，推荐 GPU |
+
+```yaml
+# configs/agent.yaml
+retrieval:
+  runtime_mode: standard    # lite | standard | heavy
+  embedding_backend: local_st
+  reranker_backend: local_crossencoder
+```
+
 ### 实验蓝图（HITL）
 
 针对 ML/DL/CV/NLP/RL 主题，Agent 自动生成 `experiment_plan` 章节，包含：
@@ -497,7 +601,7 @@ agent:
     require_human_results: true
 ```
 
-运行会在 `ingest_experiment_results` 节点暂停（返回 `END`），等待人工注入实验结果。将实验结果写入已保存的 state 后，重新触发图即可继续。
+运行会在 `ingest_experiment_results` 节点暂停（返回 `END`），等待人工注入实验结果。启用检查点后，可通过相同 `run_id` 恢复运行。
 
 **不等待人工结果（默认）：**
 
@@ -567,6 +671,16 @@ agent:
     max_per_rq: 2
     require_human_results: false
 
+ingest:
+  text_extraction: auto      # auto | marker | pymupdf
+  latex:
+    download_source: true
+  figure:
+    enabled: true
+    vlm_model: gemini-2.5-flash
+    vlm_temperature: 0.1
+    validation_min_entity_match: 0.5
+
 sources:
   arxiv:
     enabled: true
@@ -589,9 +703,15 @@ index:
   overlap: 200               # 块间重叠
 
 retrieval:
+  runtime_mode: standard     # lite | standard | heavy
+  embedding_backend: local_st  # local_st | openai_embedding | disabled
+  embedding_model: BAAI/bge-m3
+  remote_embedding_model: text-embedding-3-small
+  hybrid: true
   top_k: 10
   candidate_k: 30
-  reranker_model: BAAI/bge-reranker-base
+  reranker_backend: local_crossencoder  # local_crossencoder | disabled
+  reranker_model: BAAI/bge-reranker-v2-m3
 
 budget_guard:
   max_tokens: 5000000        # 最大 token 消耗
@@ -624,7 +744,10 @@ budget_guard:
 ## 测试
 
 ```bash
-# 运行所有测试
+# 运行所有测试（pytest）
+pytest tests/ -v
+
+# 运行所有测试（unittest）
 python -m unittest discover -s tests -v
 
 # 冒烟测试（无需 API Key）
@@ -645,12 +768,15 @@ python -m scripts.validate_run_outputs outputs/run_<timestamp>/
 | `ModuleNotFoundError` | 重新执行 `pip install -e .` |
 | 网络超时 / 连接错误 | 检查代理、防火墙和外网连通性 |
 | 检索结果为空 | 先构建索引：`python -m scripts.build_index` |
-| 运行较慢 | 使用 `--no-scrape`，降低 `--papers_per_query` 和 `--max_iter` |
+| 运行较慢 | 使用 `--no-scrape`，降低 `--papers_per_query` 和 `--max_iter`，或切换到 `lite` 运行模式 |
 | 报告缺少引用 | 提高 `evidence.min_per_rq` 或增加数据源 |
+| 内存不足（embedding/reranker） | 切换到 `lite` 模式：`retrieval.runtime_mode: lite` |
+| Provider 持续失败 | 查看 `events.log` 中的熔断器事件；增大 `sources.<provider>.polite_delay_sec` |
 
 ---
 
 ## 相关文档
 
 - 英文文档：[`README.md`](README.md)
+- 架构详情：[`docs/construction.md`](docs/construction.md)
 - 重构文档：[`REFACTOR_README.md`](REFACTOR_README.md)
