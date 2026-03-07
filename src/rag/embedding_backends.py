@@ -6,6 +6,8 @@ from typing import Any, Dict, List
 
 import numpy as np
 
+from src.common.rag_config import retrieval_device
+
 _LOCAL_ST_BACKENDS = {"local_st", "sentence_transformer", "local"}
 _OPENAI_BACKENDS = {"openai_embedding", "remote", "remote_embedding"}
 _BGE_QUERY_PREFIX = {
@@ -35,11 +37,26 @@ def _normalize_embeddings(vectors: Any) -> np.ndarray:
     return arr / norms
 
 
-@lru_cache(maxsize=2)
-def _load_local_model(model_name: str):
+def _resolve_local_device(cfg: Dict[str, Any] | None) -> str:
+    requested = retrieval_device(cfg or {})
+    if requested != "auto":
+        return requested
+    try:
+        import torch
+    except Exception:
+        return "cpu"
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+@lru_cache(maxsize=4)
+def _load_local_model(model_name: str, device: str):
     from sentence_transformers import SentenceTransformer
 
-    return SentenceTransformer(model_name)
+    return SentenceTransformer(model_name, device=device)
 
 
 def _add_query_prefix(texts: List[str], model_name: str, *, is_query: bool) -> List[str]:
@@ -56,8 +73,9 @@ def _embed_with_local_st(
     *,
     model_name: str,
     is_query: bool,
+    cfg: Dict[str, Any] | None,
 ) -> np.ndarray:
-    model = _load_local_model(model_name)
+    model = _load_local_model(model_name, _resolve_local_device(cfg))
     prepared = _add_query_prefix(texts, model_name, is_query=is_query)
     vectors = model.encode(
         prepared,
@@ -106,7 +124,7 @@ def embed_texts(
 ) -> np.ndarray:
     backend = _normalize_backend_name(backend_name)
     if backend == "local_st":
-        return _embed_with_local_st(texts, model_name=model_name, is_query=is_query)
+        return _embed_with_local_st(texts, model_name=model_name, is_query=is_query, cfg=cfg)
     if backend == "openai_embedding":
         return _embed_with_openai(texts, model_name=model_name, cfg=cfg)
     if backend == "disabled":
@@ -122,7 +140,7 @@ def embedding_dim(
 ) -> int:
     backend = _normalize_backend_name(backend_name)
     if backend == "local_st":
-        model = _load_local_model(model_name)
+        model = _load_local_model(model_name, _resolve_local_device(cfg))
         return int(model.get_sentence_embedding_dimension())
     sample = embed_texts(
         ["dimension probe"],

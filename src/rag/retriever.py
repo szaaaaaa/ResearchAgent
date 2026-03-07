@@ -273,6 +273,7 @@ class Retriever:
                 out,
                 model_name=reranker_model,
                 backend_name=reranker_backend_name,
+                cfg=cfg,
             )
         out = _collapse_figure_duplicates(out)
         if intent == "visual":

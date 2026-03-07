@@ -89,6 +89,9 @@ def index_pdfs(
     build_bm25: bool = False,
     root: Path | None = None,
     cfg: Dict[str, Any] | None = None,
+    ingest_overrides: Dict[str, Any] | None = None,
+    allow_existing_doc_updates: bool = False,
+    include_text_chunks: bool = True,
 ) -> Dict[str, Any]:
     from src.ingest.chunking import chunk_text
     from src.ingest.figure_captioner import figure_data_to_chunks, process_figures
@@ -102,6 +105,7 @@ def index_pdfs(
     from src.ingest.pdf_loader import load_pdf_text
 
     cfg = cfg or {}
+    ingest_overrides = ingest_overrides or {}
     root = root or Path(".").resolve()
     embedding_backend = embedding_backend or retrieval_embedding_backend(cfg)
     effective_embedding_model = retrieval_effective_embedding_model(cfg, embedding_model)
@@ -112,8 +116,8 @@ def index_pdfs(
 
     for pdf in pdfs:
         doc_id = single_doc_id if single_doc_id else pdf.stem
-        extraction_mode = ingest_text_extraction(cfg)
-        figure_enabled = ingest_figure_enabled(cfg)
+        extraction_mode = ingest_text_extraction(cfg, override=ingest_overrides.get("text_extraction"))
+        figure_enabled = ingest_figure_enabled(cfg, override=ingest_overrides.get("figure_enabled"))
         image_dir = ingest_figure_image_dir(root, cfg)
         source_dir = ingest_latex_source_dir(root, cfg)
         min_width = ingest_figure_min_width(cfg)
@@ -151,7 +155,8 @@ def index_pdfs(
             else:
                 raise
         text_source = parsed.text if parsed is not None and len(parsed.text) >= 500 else loaded.text
-        text_chunks = chunk_text(text_source, chunk_size=chunk_size, overlap=overlap)
+        raw_text_chunks = chunk_text(text_source, chunk_size=chunk_size, overlap=overlap)
+        text_chunks = raw_text_chunks if include_text_chunks else []
         all_chunks = list(text_chunks)
 
         if figure_enabled:
@@ -180,7 +185,7 @@ def index_pdfs(
                     temperature=vlm_temperature,
                     validation_min_entity_match=validation_min_entity_match,
                 )
-                all_chunks.extend(figure_data_to_chunks(figure_data, doc_id, len(text_chunks)))
+                all_chunks.extend(figure_data_to_chunks(figure_data, doc_id, len(raw_text_chunks)))
             except Exception as exc:
                 logger.warning("Figure processing failed for %s: %s", doc_id, exc)
 
@@ -199,6 +204,7 @@ def index_pdfs(
             embedding_backend=embedding_backend,
             build_bm25=build_bm25,
             cfg=cfg,
+            allow_existing_doc_updates=allow_existing_doc_updates,
         )
 
         rows.append(
@@ -209,8 +215,9 @@ def index_pdfs(
                 "chunks": int(added),
             }
         )
-        indexed_docs.append(doc_id)
-        total_chunks += int(added)
+        if int(added) > 0:
+            indexed_docs.append(doc_id)
+            total_chunks += int(added)
         total_docs += 1
 
     return {
@@ -218,6 +225,7 @@ def index_pdfs(
         "total_docs": total_docs,
         "total_chunks": total_chunks,
         "indexed_docs": indexed_docs,
+        "processed_docs": [row["doc_id"] for row in rows],
     }
 
 

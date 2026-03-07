@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Dict
 
@@ -43,6 +44,30 @@ def collection_name(cfg: Dict[str, Any], override: str | None = None) -> str:
         get_by_dotted(cfg, "collection_name"),
         default="papers",
     )
+
+
+def scoped_collection_name(
+    cfg: Dict[str, Any],
+    *,
+    base_name: str,
+    embedding_model: str | None = None,
+) -> str:
+    """Derive a collection name that is isolated per effective embedding model."""
+    scoped_enabled = as_bool(get_by_dotted(cfg, "index.scope_collections_by_embedding_model"), True)
+    if not scoped_enabled:
+        return base_name
+
+    effective_model = str(
+        embedding_model
+        or retrieval_effective_embedding_model(cfg)
+    ).strip()
+    if not effective_model:
+        return base_name
+
+    model_slug = re.sub(r"[^a-z0-9]+", "_", effective_model.lower()).strip("_")
+    if not model_slug:
+        return base_name
+    return f"{base_name}__{model_slug}"
 
 
 def fetch_max_results(cfg: Dict[str, Any], override: int | None = None) -> int:
@@ -97,6 +122,11 @@ def retrieval_embedding_backend(cfg: Dict[str, Any], override: str | None = None
     if raw not in {"local_st", "openai_embedding", "disabled"}:
         return "local_st"
     return raw
+
+
+def retrieval_device(cfg: Dict[str, Any], override: str | None = None) -> str:
+    raw = pick_str(override, get_by_dotted(cfg, "retrieval.device"), default="auto").lower()
+    return raw or "auto"
 
 
 def retrieval_remote_embedding_model(cfg: Dict[str, Any], override: str | None = None) -> str:

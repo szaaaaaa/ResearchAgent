@@ -50,6 +50,7 @@ def build_chroma_index(
     embedding_backend: str = DEFAULT_BACKEND,
     build_bm25: bool = False,
     cfg: Dict[str, Any] | None = None,
+    allow_existing_doc_updates: bool = False,
 ) -> int:
     """Index chunks into Chroma.
 
@@ -67,7 +68,7 @@ def build_chroma_index(
     )
 
     # Cross-run dedup: if this doc is already in the collection, skip re-embedding.
-    if run_id:
+    if run_id and not allow_existing_doc_updates:
         try:
             existing = col.get(where={"doc_id": doc_id}, include=[], limit=1)
             if existing and existing.get("ids"):
@@ -97,6 +98,26 @@ def build_chroma_index(
         backend_name=embedding_backend,
         cfg=cfg,
     ).tolist()
+
+    existing_ids: set[str] = set()
+    try:
+        existing = col.get(ids=ids, include=[])
+        existing_ids = set(existing.get("ids", []) or [])
+    except Exception:
+        existing_ids = set()
+
+    if existing_ids:
+        filtered = [
+            (cid, doc, meta, emb)
+            for cid, doc, meta, emb in zip(ids, docs, metas, embeddings)
+            if cid not in existing_ids
+        ]
+        if not filtered:
+            return 0
+        ids = [cid for cid, _, _, _ in filtered]
+        docs = [doc for _, doc, _, _ in filtered]
+        metas = [meta for _, _, meta, _ in filtered]
+        embeddings = [emb for _, _, _, emb in filtered]
 
     col.add(ids=ids, documents=docs, metadatas=metas, embeddings=embeddings)
 

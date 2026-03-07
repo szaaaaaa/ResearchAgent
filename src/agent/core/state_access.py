@@ -6,6 +6,7 @@ from typing import Any, Dict
 _FIELD_NS_MAP = {
     "papers": "research",
     "indexed_paper_ids": "research",
+    "figure_indexed_paper_ids": "research",
     "web_sources": "research",
     "indexed_web_ids": "research",
     "analyses": "research",

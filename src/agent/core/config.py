@@ -125,6 +125,7 @@ DEFAULT_RETRIEVAL_RUNTIME_MODE = "standard"
 DEFAULT_RETRIEVAL_EMBEDDING_BACKEND = "local_st"
 DEFAULT_RETRIEVAL_REMOTE_EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_RETRIEVAL_RERANKER_BACKEND = "local_crossencoder"
+DEFAULT_RETRIEVAL_DEVICE = "auto"
 
 
 def _to_bool(value: Any, default: bool) -> bool:
@@ -248,6 +249,9 @@ def normalize_and_validate_config(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
     retrieval_cfg["remote_embedding_model"] = str(
         retrieval_cfg.get("remote_embedding_model", DEFAULT_RETRIEVAL_REMOTE_EMBEDDING_MODEL)
     ).strip() or DEFAULT_RETRIEVAL_REMOTE_EMBEDDING_MODEL
+    retrieval_cfg["device"] = str(
+        retrieval_cfg.get("device", DEFAULT_RETRIEVAL_DEVICE)
+    ).strip().lower() or DEFAULT_RETRIEVAL_DEVICE
     reranker_backend = str(retrieval_cfg.get("reranker_backend", "")).strip().lower()
     if not reranker_backend:
         reranker_backend = "disabled" if runtime_mode == "lite" else DEFAULT_RETRIEVAL_RERANKER_BACKEND
@@ -269,6 +273,22 @@ def normalize_and_validate_config(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
         agent_cfg.get("report_max_sources", DEFAULT_REPORT_MAX_SOURCES)
     )
     agent_cfg["seed"] = int(agent_cfg.get("seed", DEFAULT_AGENT_SEED))
+    staged_index_cfg = agent_cfg.setdefault("staged_indexing", {})
+    staged_index_cfg["enabled"] = _to_bool(staged_index_cfg.get("enabled"), True)
+    staged_index_cfg["fast_text_only_until_iteration"] = int(
+        staged_index_cfg.get("fast_text_only_until_iteration", 0)
+    )
+    staged_index_cfg["first_pass_text_extraction"] = str(
+        staged_index_cfg.get("first_pass_text_extraction", "pymupdf_only")
+    ).strip().lower() or "pymupdf_only"
+    if staged_index_cfg["first_pass_text_extraction"] not in {
+        "auto", "latex_first", "marker_only", "pymupdf_only",
+    }:
+        staged_index_cfg["first_pass_text_extraction"] = "pymupdf_only"
+    staged_index_cfg["figure_enrichment_start_iteration"] = int(
+        staged_index_cfg.get("figure_enrichment_start_iteration", 1)
+    )
+    staged_index_cfg["figure_top_papers"] = max(0, int(staged_index_cfg.get("figure_top_papers", 4)))
 
     budget_cfg = agent_cfg.setdefault("budget", {})
     budget_cfg["max_research_questions"] = int(

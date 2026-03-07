@@ -9,8 +9,59 @@ from src.agent.core.executor import TaskRequest
 from src.agent.core.executor_router import dispatch as _default_dispatch
 from src.agent.core.schemas import ResearchState
 from src.agent.core.state_access import to_namespaced_update, with_flattened_legacy_view
+from src.common.rag_config import retrieval_effective_embedding_model, scoped_collection_name
 
 logger = logging.getLogger(__name__)
+
+
+def _paper_is_indexable(paper: Dict[str, Any]) -> bool:
+    pdf_path = paper.get("pdf_path")
+    return bool(pdf_path) and Path(str(pdf_path)).exists()
+
+
+def _select_figure_enrichment_papers(
+    state: Dict[str, Any],
+    *,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    if limit <= 0:
+        return []
+
+    papers_by_uid = {
+        str(paper.get("uid")): paper
+        for paper in state.get("papers", [])
+        if isinstance(paper, dict) and paper.get("uid") and _paper_is_indexable(paper)
+    }
+    figure_done = set(state.get("figure_indexed_paper_ids", []))
+    ordered_uids: List[str] = []
+    seen_uids: set[str] = set()
+
+    def _push(uid: str) -> None:
+        if not uid or uid in seen_uids or uid in figure_done or uid not in papers_by_uid:
+            return
+        seen_uids.add(uid)
+        ordered_uids.append(uid)
+
+    for entry in state.get("claim_evidence_map", []):
+        if not isinstance(entry, dict):
+            continue
+        for evidence in entry.get("evidence", []):
+            if isinstance(evidence, dict):
+                _push(str(evidence.get("uid") or ""))
+
+    analyses = sorted(
+        [item for item in state.get("analyses", []) if isinstance(item, dict)],
+        key=lambda item: float(item.get("relevance_score", 0.0) or 0.0),
+        reverse=True,
+    )
+    for analysis in analyses:
+        _push(str(analysis.get("uid") or ""))
+
+    for paper in state.get("papers", []):
+        if isinstance(paper, dict):
+            _push(str(paper.get("uid") or ""))
+
+    return [papers_by_uid[uid] for uid in ordered_uids[:limit]]
 
 
 def index_sources(
@@ -41,6 +92,17 @@ def index_sources(
     )
     paper_collection = cfg.get("index", {}).get("collection_name", "papers")
     web_collection = cfg.get("index", {}).get("web_collection_name", "web_sources")
+    embedding_model = retrieval_effective_embedding_model(cfg)
+    paper_collection = scoped_collection_name(
+        cfg,
+        base_name=str(paper_collection),
+        embedding_model=embedding_model,
+    )
+    web_collection = scoped_collection_name(
+        cfg,
+        base_name=str(web_collection),
+        embedding_model=embedding_model,
+    )
     chunk_size = cfg.get("index", {}).get("chunk_size", 1200)
     overlap = cfg.get("index", {}).get("overlap", 200)
 
@@ -71,18 +133,33 @@ def index_sources(
 
     new_paper_ids: List[str] = []
     new_web_ids: List[str] = []
+    new_figure_ids: List[str] = []
+
+    iteration = int(state.get("iteration", 0) or 0)
+    staged_cfg = cfg.get("agent", {}).get("staged_indexing", {})
+    staged_enabled = bool(staged_cfg.get("enabled", True))
+    fast_text_only_until_iteration = int(staged_cfg.get("fast_text_only_until_iteration", 0))
+    first_pass_text_extraction = str(staged_cfg.get("first_pass_text_extraction", "pymupdf_only"))
+    figure_enrichment_start_iteration = int(staged_cfg.get("figure_enrichment_start_iteration", 1))
+    figure_top_papers = int(staged_cfg.get("figure_top_papers", 4))
+    figure_globally_enabled = bool(cfg.get("ingest", {}).get("figure", {}).get("enabled", True))
 
     already_indexed = set(state.get("indexed_paper_ids", []))
     papers = state.get("papers", [])
     to_index = [
         paper
         for paper in papers
-        if paper.get("pdf_path")
+        if _paper_is_indexable(paper)
         and paper["uid"] not in already_indexed
-        and Path(paper["pdf_path"]).exists()
     ]
 
     if to_index:
+        ingest_overrides: Dict[str, Any] = {}
+        if staged_enabled and iteration <= fast_text_only_until_iteration:
+            ingest_overrides = {
+                "figure_enabled": False,
+                "text_extraction": first_pass_text_extraction,
+            }
         task_result = dispatch(
             TaskRequest(
                 action="index_pdf_documents",
@@ -93,6 +170,9 @@ def index_sources(
                     "chunk_size": chunk_size,
                     "overlap": overlap,
                     "run_id": run_id,
+                    "ingest_overrides": ingest_overrides,
+                    "allow_existing_doc_updates": False,
+                    "include_text_chunks": True,
                 },
             ),
             cfg,
@@ -101,6 +181,30 @@ def index_sources(
             new_paper_ids = task_result.data.get("indexed_docs", [])
         else:
             logger.error("PDF indexing failed: %s", task_result.error)
+
+    if staged_enabled and figure_globally_enabled and iteration >= figure_enrichment_start_iteration:
+        figure_candidates = _select_figure_enrichment_papers(state, limit=figure_top_papers)
+        if figure_candidates:
+            figure_result = dispatch(
+                TaskRequest(
+                    action="index_pdf_documents",
+                    params={
+                        "persist_dir": persist_dir,
+                        "collection_name": paper_collection,
+                        "pdfs": [paper["pdf_path"] for paper in figure_candidates],
+                        "chunk_size": chunk_size,
+                        "overlap": overlap,
+                        "run_id": run_id,
+                        "allow_existing_doc_updates": True,
+                        "include_text_chunks": False,
+                    },
+                ),
+                cfg,
+            )
+            if figure_result.success:
+                new_figure_ids = [str(paper["uid"]) for paper in figure_candidates]
+            else:
+                logger.error("Figure enrichment indexing failed: %s", figure_result.error)
 
     all_submitted_paper_ids = [Path(paper["pdf_path"]).stem for paper in to_index]
     if run_id and all_submitted_paper_ids:
@@ -182,16 +286,21 @@ def index_sources(
     cumulative_paper_ids = list(
         dict.fromkeys(list(state.get("indexed_paper_ids", [])) + new_paper_ids)
     )
+    cumulative_figure_ids = list(
+        dict.fromkeys(list(state.get("figure_indexed_paper_ids", [])) + new_figure_ids)
+    )
     cumulative_web_ids = list(
         dict.fromkeys(list(state.get("indexed_web_ids", [])) + new_web_ids)
     )
     return ns(
         {
             "indexed_paper_ids": cumulative_paper_ids,
+            "figure_indexed_paper_ids": cumulative_figure_ids,
             "indexed_web_ids": cumulative_web_ids,
             "status": (
                 f"Indexed {len(new_paper_ids)} new PDFs, {len(new_web_ids)} new web pages "
                 f"(cumulative: {len(cumulative_paper_ids)} papers, {len(cumulative_web_ids)} web)"
+                + (f"; figure-enriched {len(new_figure_ids)} priority papers" if new_figure_ids else "")
             ),
         }
     )

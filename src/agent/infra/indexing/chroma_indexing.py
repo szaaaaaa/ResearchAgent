@@ -23,6 +23,9 @@ def index_pdf_documents(
     build_bm25: bool = False,
     root: Path | None = None,
     cfg: dict | None = None,
+    ingest_overrides: dict | None = None,
+    allow_existing_doc_updates: bool = False,
+    include_text_chunks: bool = True,
 ):
     from src.workflows.traditional_rag import index_pdfs
 
@@ -38,6 +41,9 @@ def index_pdf_documents(
         build_bm25=build_bm25,
         root=root,
         cfg=cfg,
+        ingest_overrides=ingest_overrides,
+        allow_existing_doc_updates=allow_existing_doc_updates,
+        include_text_chunks=include_text_chunks,
     )
 
 

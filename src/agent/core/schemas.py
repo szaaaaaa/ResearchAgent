@@ -187,6 +187,7 @@ class SearchFetchResult(TypedDict):
 class ResearchNamespace(TypedDict, total=False):
     papers: List[PaperRecord]
     indexed_paper_ids: List[str]
+    figure_indexed_paper_ids: List[str]
     web_sources: List[WebResult]
     indexed_web_ids: List[str]
     analyses: List[AnalysisResult]
@@ -338,6 +339,8 @@ class ResearchState(TypedDict, total=False):
 
     # Internal/runtime fields used by node orchestration.
     _cfg: Dict[str, Any]
+    _experiment_review_retries: int
+    _retrieval_review_retries: int
 
     # Legacy flat fields retained during migration for compatibility.
     research_questions: List[str]
@@ -348,6 +351,7 @@ class ResearchState(TypedDict, total=False):
     memory_summary: str
     papers: List[PaperRecord]
     indexed_paper_ids: List[str]
+    figure_indexed_paper_ids: List[str]
     web_sources: List[WebResult]
     indexed_web_ids: List[str]
     analyses: List[AnalysisResult]

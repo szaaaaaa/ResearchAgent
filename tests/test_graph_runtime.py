@@ -75,7 +75,7 @@ class GraphRuntimeTest(unittest.TestCase):
         self.assertEqual(
             graph._route_after_review_experiment(
                 {
-                    "_experiment_review_retries": 1,
+                    "_experiment_review_retries": 0,
                     "_cfg": {"reviewer": {"experiment": {"max_retries": 1}}},
                     "review": {"experiment_review": {"verdict": {"action": "retry_upstream"}}},
                 }
@@ -85,7 +85,7 @@ class GraphRuntimeTest(unittest.TestCase):
         self.assertEqual(
             graph._route_after_review_experiment(
                 {
-                    "_experiment_review_retries": 2,
+                    "_experiment_review_retries": 1,
                     "_cfg": {"reviewer": {"experiment": {"max_retries": 1}}},
                     "review": {"experiment_review": {"verdict": {"action": "retry_upstream"}}},
                 }

@@ -37,6 +37,7 @@ retrieval:
   runtime_mode: standard
   embedding_backend: local_st
   embedding_model: BAAI/bge-m3        # or all-MiniLM-L6-v2
+  device: auto                        # use CUDA/MPS automatically when available
   remote_embedding_model: text-embedding-3-small
   hybrid: true                         # BM25 + dense RRF fusion
   top_k: 10
@@ -149,6 +150,12 @@ agent:
     enabled: true
     max_per_rq: 2
     require_human_results: false
+  staged_indexing:
+    enabled: true
+    fast_text_only_until_iteration: 0
+    first_pass_text_extraction: pymupdf_only
+    figure_enrichment_start_iteration: 1
+    figure_top_papers: 4
 sources:
   pdf_download:
     only_allowed_hosts: true

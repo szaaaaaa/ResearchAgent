@@ -62,6 +62,9 @@ class IndexExecutor:
                     build_bm25=bool(retrieval_cfg.get("hybrid", False)),
                     root=Path(str(cfg.get("_root", "."))),
                     cfg=cfg,
+                    ingest_overrides=dict(params.get("ingest_overrides", {}) or {}),
+                    allow_existing_doc_updates=bool(params.get("allow_existing_doc_updates", False)),
+                    include_text_chunks=bool(params.get("include_text_chunks", True)),
                 )
                 return TaskResult(success=True, data=dict(result))
 

@@ -16,6 +16,7 @@ from src.agent.core.source_ranking import (
 )
 from src.agent.core.state_access import to_namespaced_update, with_flattened_legacy_view
 from src.agent.core.topic_filter import _extract_table_signals as _default_extract_table_signals
+from src.common.rag_config import retrieval_effective_embedding_model, scoped_collection_name
 from src.agent.prompts import (
     ANALYZE_PAPER_SYSTEM,
     ANALYZE_PAPER_USER,
@@ -64,6 +65,11 @@ def analyze_sources(
         (root / cfg.get("index", {}).get("persist_dir", "data/indexes/chroma")).resolve()
     )
     paper_collection = cfg.get("index", {}).get("collection_name", "papers")
+    paper_collection = scoped_collection_name(
+        cfg,
+        base_name=str(paper_collection),
+        embedding_model=retrieval_effective_embedding_model(cfg),
+    )
     top_k = cfg.get("agent", {}).get("top_k_for_analysis", 8)
     candidate_k = cfg.get("retrieval", {}).get("candidate_k")
     reranker_model = cfg.get("retrieval", {}).get("reranker_model") or None

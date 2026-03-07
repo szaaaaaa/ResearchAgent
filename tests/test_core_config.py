@@ -56,11 +56,17 @@ class CoreConfigTest(unittest.TestCase):
         self.assertEqual(out["retrieval"]["embedding_backend"], "local_st")
         self.assertEqual(out["retrieval"]["remote_embedding_model"], "text-embedding-3-small")
         self.assertEqual(out["retrieval"]["reranker_backend"], "local_crossencoder")
+        self.assertEqual(out["retrieval"]["device"], "auto")
         self.assertEqual(out["ingest"]["text_extraction"], "auto")
         self.assertTrue(out["ingest"]["latex"]["download_source"])
         self.assertTrue(out["ingest"]["figure"]["enabled"])
         self.assertEqual(out["ingest"]["figure"]["min_width"], 100)
         self.assertEqual(out["ingest"]["figure"]["vlm_model"], "gemini-2.5-flash")
+        self.assertIn("staged_indexing", out["agent"])
+        self.assertTrue(out["agent"]["staged_indexing"]["enabled"])
+        self.assertEqual(out["agent"]["staged_indexing"]["fast_text_only_until_iteration"], 0)
+        self.assertEqual(out["agent"]["staged_indexing"]["figure_enrichment_start_iteration"], 1)
+        self.assertEqual(out["agent"]["staged_indexing"]["figure_top_papers"], 4)
 
     def test_normalize_bool_and_order(self) -> None:
         out = normalize_and_validate_config(

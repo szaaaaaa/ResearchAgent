@@ -4,6 +4,7 @@ import unittest
 
 from src.agent.core.config import normalize_and_validate_config
 from src.common.rag_config import (
+    scoped_collection_name,
     retrieval_effective_embedding_model,
     retrieval_embedding_backend,
     retrieval_reranker_backend,
@@ -39,6 +40,21 @@ class RuntimeModesTest(unittest.TestCase):
         reranked = rerank_hits("query", hits, model_name="unused", backend_name="disabled")
 
         self.assertEqual(reranked, hits)
+
+    def test_collection_name_is_scoped_by_embedding_model(self) -> None:
+        cfg = normalize_and_validate_config(
+            {
+                "retrieval": {
+                    "embedding_backend": "local_st",
+                    "embedding_model": "BAAI/bge-m3",
+                }
+            }
+        )
+
+        self.assertEqual(
+            scoped_collection_name(cfg, base_name="papers"),
+            "papers__baai_bge_m3",
+        )
 
 
 if __name__ == "__main__":

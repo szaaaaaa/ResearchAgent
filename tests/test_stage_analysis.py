@@ -39,9 +39,11 @@ class StageAnalysisTest(unittest.TestCase):
             "findings": ["old finding"],
             "_cfg": {"agent": {}, "llm": {"model": "gpt-4.1-mini"}, "index": {}, "retrieval": {}},
         }
+        seen_collections: list[str] = []
 
         def dispatch(task, cfg):
             if task.action == "retrieve_chunks":
+                seen_collections.append(task.params["collection_name"])
                 return TaskResult(success=True, data={"hits": [{"text": "retrieval chunk"}]})
             return TaskResult(success=False, error="unexpected")
 
@@ -77,6 +79,7 @@ class StageAnalysisTest(unittest.TestCase):
         self.assertEqual(out["analyses"][2]["source_url_canonical"], "https://example.com")
         self.assertIn("[Paper: Paper One] paper finding", out["findings"])
         self.assertIn("[Web: Web One] web finding", out["findings"])
+        self.assertEqual(seen_collections, ["papers__all_minilm_l6_v2"])
 
 
 if __name__ == "__main__":

@@ -64,7 +64,7 @@ def _route_after_review_experiment(state: ResearchState) -> str:
     max_retries = int(state.get("_cfg", {}).get("reviewer", {}).get("experiment", {}).get("max_retries", 1))
 
     if action == "retry_upstream":
-        if review_retries <= max_retries:
+        if review_retries < max_retries:
             logger.info(
                 "[ExperimentReviewer] Routing back to recommend_experiments for revision (%d/%d)",
                 review_retries,
@@ -263,6 +263,7 @@ def run_research(
             "memory_summary": "",
             "papers": [],
             "indexed_paper_ids": [],
+            "figure_indexed_paper_ids": [],
             "web_sources": [],
             "indexed_web_ids": [],
             "analyses": [],
