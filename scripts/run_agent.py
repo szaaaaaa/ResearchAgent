@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
 from src.common.config_utils import expand_vars, load_yaml
 from src.common.runtime_utils import ensure_dir, now_tag
 from src.agent.core.config import normalize_and_validate_config
+from src.agent.core.secret_redaction import install_logging_redaction, redact_data
 from src.agent.core.state_access import sget
 
 ALL_SOURCES = ("arxiv", "google_scholar", "semantic_scholar", "web")
@@ -77,7 +78,7 @@ def _resolve_cfg_paths(cfg: dict) -> dict:
 
 def _append_event_line(path: Path, payload: dict) -> None:
     with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        f.write(json.dumps(redact_data(payload), ensure_ascii=False) + "\n")
 
 
 def _git_commit_hash(root: Path) -> str | None:
@@ -120,6 +121,7 @@ def main() -> None:
         format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
         datefmt="%H:%M:%S",
     )
+    install_logging_redaction()
     logger = logging.getLogger("research_agent")
 
     # ── Load config ──────────────────────────────────────────────────
@@ -209,7 +211,10 @@ def main() -> None:
     run_started = run_started_global
 
     cfg_snapshot_path = run_dir / "config.snapshot.yaml"
-    cfg_snapshot_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    cfg_snapshot_path.write_text(
+        yaml.safe_dump(redact_data(cfg), sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
 
     # Save report
     await_experiment_results = bool(final_state.get("await_experiment_results", False))
@@ -314,7 +319,10 @@ def main() -> None:
         "metrics_path": str(metrics_path),
     }
     run_meta_path = run_dir / "run_meta.json"
-    run_meta_path.write_text(json.dumps(run_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    run_meta_path.write_text(
+        json.dumps(redact_data(run_meta), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
     _append_event_line(
         events_path,

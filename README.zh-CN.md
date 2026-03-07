@@ -400,6 +400,19 @@ $env:GEMINI_API_KEY="AIza..."
 
 同时在 `configs/agent.yaml` 中设置 `providers.llm.backend: gemini_chat`。
 
+安全规则：
+
+- API Key 只能放在环境变量里。
+- 不要在 `configs/agent.yaml` 中写入 `api_key`、`token`、`secret`、`password` 等明文字段。
+- 运行时现在会直接拒绝带明文密钥的配置。
+- `config.snapshot.yaml`、`events.log`、`trace.jsonl`、`run_meta.json` 等输出会先做脱敏再写盘，但安全配置方式仍然只有环境变量。
+
+常用环境变量：
+
+- LLM：`OPENAI_API_KEY`、`GEMINI_API_KEY`、`GOOGLE_API_KEY`
+- 搜索：`SERPAPI_API_KEY`、`GOOGLE_CSE_API_KEY`、`GOOGLE_CSE_CX`、`BING_API_KEY`、`GITHUB_TOKEN`
+- Embedding：`OPENAI_API_KEY`，或通过 `retrieval.openai_api_key_env` 指定自定义环境变量名
+
 ---
 
 ## 快速入门
@@ -446,6 +459,12 @@ providers:
 llm:
   model: gemini-2.0-flash
 ```
+
+安全说明：
+
+- 不要把密钥写进 `configs/agent.yaml`。
+- 只在系统环境变量中配置 API 凭证。
+- 如果你需要自定义变量名，只配置“环境变量名”本身，例如 `providers.llm.gemini_api_key_env` 或 `retrieval.openai_api_key_env`。
 
 ### 第四步 — 验证安装（无需真实 API Key）
 
@@ -763,8 +782,8 @@ python -m scripts.validate_run_outputs outputs/run_<timestamp>/
 
 | 错误 | 解决方案 |
 |------|----------|
-| `Missing OPENAI_API_KEY` | `export OPENAI_API_KEY="sk-..."` |
-| `Missing GEMINI_API_KEY` | 使用 `gemini_chat` 后端时，设置 `export GEMINI_API_KEY="AIza..."` |
+| `Missing OPENAI_API_KEY` | 在当前 shell 环境中设置 `OPENAI_API_KEY` |
+| `Missing GEMINI_API_KEY` | 使用 `gemini_chat` 时设置 `GEMINI_API_KEY` 或 `GOOGLE_API_KEY` |
 | `ModuleNotFoundError` | 重新执行 `pip install -e .` |
 | 网络超时 / 连接错误 | 检查代理、防火墙和外网连通性 |
 | 检索结果为空 | 先构建索引：`python -m scripts.build_index` |

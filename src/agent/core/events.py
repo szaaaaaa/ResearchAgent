@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Dict
 
+from src.agent.core.secret_redaction import redact_data, redact_text
 from src.agent.core.state_access import sget
 
 logger = logging.getLogger(__name__)
@@ -20,12 +21,13 @@ def _now_iso() -> str:
 
 def emit_event(cfg: Dict[str, Any], payload: Dict[str, Any]) -> None:
     """Emit a structured event to logger and optional JSONL file."""
-    logger.info("event=%s", json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    safe_payload = redact_data(payload)
+    logger.info("event=%s", json.dumps(safe_payload, ensure_ascii=False, sort_keys=True))
     events_file = str(cfg.get("_events_file", "") or "").strip()
     if not events_file:
         return
     path = Path(events_file)
-    line = json.dumps(payload, ensure_ascii=False) + "\n"
+    line = json.dumps(safe_payload, ensure_ascii=False) + "\n"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with _WRITE_LOCK:
@@ -72,13 +74,18 @@ def instrument_node(name: str, fn: Callable[[Dict[str, Any]], Dict[str, Any]]) -
                     "run_id": run_id,
                     "iteration": iteration,
                     "duration_ms": duration_ms,
-                    "error": str(exc),
+                    "error": redact_text(str(exc)),
                 },
             )
             # Feed trace logger on error
             trace_logger = cfg.get("_trace_logger")
             if trace_logger is not None:
-                trace_logger.log_stage(name, state, duration_ms=duration_ms, error=str(exc))
+                trace_logger.log_stage(
+                    name,
+                    state,
+                    duration_ms=duration_ms,
+                    error=redact_text(str(exc)),
+                )
             raise
 
         duration_ms = round((time.perf_counter() - start) * 1000.0, 3)

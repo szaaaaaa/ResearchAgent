@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, Iterable, List
 
+from src.agent.core.secret_redaction import assert_no_inline_secrets
+
 ALL_SOURCES = (
     "arxiv",
     "openalex",
@@ -165,6 +167,7 @@ def _has_nested_key(data: Dict[str, Any] | None, *path: str) -> bool:
 def normalize_and_validate_config(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
     """Normalize config shape and enforce baseline defaults."""
     raw_cfg: Dict[str, Any] = deepcopy(cfg or {})
+    assert_no_inline_secrets(raw_cfg)
     out: Dict[str, Any] = deepcopy(cfg or {})
 
     llm_cfg = out.setdefault("llm", {})

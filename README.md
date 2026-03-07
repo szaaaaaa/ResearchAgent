@@ -386,6 +386,19 @@ $env:GEMINI_API_KEY="AIza..."
 
 Then set `providers.llm.backend: gemini_chat` in `configs/agent.yaml`.
 
+Security rules:
+
+- Store API keys in environment variables only.
+- Do not put `api_key`, `token`, `secret`, or `password` values in `configs/agent.yaml`.
+- The runtime now rejects inline secrets in config and will abort early if you add them there.
+- Output artifacts such as `config.snapshot.yaml`, `events.log`, `trace.jsonl`, and `run_meta.json` are redacted before being written, but environment variables are still the only supported secure configuration path.
+
+Common environment variables:
+
+- LLM: `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`
+- Search: `SERPAPI_API_KEY`, `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_CX`, `BING_API_KEY`, `GITHUB_TOKEN`
+- Embedding: `OPENAI_API_KEY` or a custom env name via `retrieval.openai_api_key_env`
+
 ---
 
 ## Quick Start
@@ -416,7 +429,7 @@ export OPENAI_API_KEY="sk-..."          # Bash
 # $env:OPENAI_API_KEY="sk-..."          # PowerShell
 ```
 
-**Option B — Google Gemini** (free tier available):
+**Option B - Google Gemini** (free tier available):
 
 ```bash
 export GEMINI_API_KEY="AIza..."         # Bash
@@ -432,6 +445,12 @@ providers:
 llm:
   model: gemini-2.0-flash
 ```
+
+Security note:
+
+- Keep secrets out of `configs/agent.yaml`.
+- Use only environment variables for API credentials.
+- If you need a custom variable name, configure the env-var name only, for example `providers.llm.gemini_api_key_env` or `retrieval.openai_api_key_env`.
 
 ### Step 4 — Verify the installation (no API calls)
 
@@ -741,8 +760,8 @@ python -m scripts.validate_run_outputs outputs/run_<timestamp>/
 
 | Error | Fix |
 |-------|-----|
-| `Missing OPENAI_API_KEY` | `export OPENAI_API_KEY="sk-..."` |
-| `Missing GEMINI_API_KEY` | `export GEMINI_API_KEY="AIza..."` when using `gemini_chat` backend |
+| `Missing OPENAI_API_KEY` | Set `OPENAI_API_KEY` in your shell environment |
+| `Missing GEMINI_API_KEY` | Set `GEMINI_API_KEY` or `GOOGLE_API_KEY` when using `gemini_chat` |
 | `ModuleNotFoundError` | Re-run `pip install -e .` |
 | Network timeout / connection error | Check proxy/firewall settings |
 | Empty retrieval results | Build the index first: `python -m scripts.build_index` |

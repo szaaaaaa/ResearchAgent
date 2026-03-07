@@ -20,6 +20,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional
 
+from src.agent.core.secret_redaction import redact_data, redact_text
 from src.agent.core.state_access import sget
 
 logger = logging.getLogger(__name__)
@@ -143,7 +144,7 @@ class TraceLogger:
             "snapshot": _snapshot_state(state),
         }
         if error:
-            entry["error"] = error
+            entry["error"] = redact_text(error)
         self._entries.append(entry)
         self._write_entry(entry)
 
@@ -178,7 +179,7 @@ class TraceLogger:
         if not self._run_dir:
             return
         path = self._run_dir / "trace.jsonl"
-        line = json.dumps(entry, ensure_ascii=False, default=str) + "\n"
+        line = json.dumps(redact_data(entry), ensure_ascii=False, default=str) + "\n"
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with _LOCK:
@@ -201,7 +202,7 @@ class TraceLogger:
                 if e.get("type") == "reviewer"
             ],
             "errors": [
-                {"stage": e["stage"], "error": e["error"]}
+                {"stage": e["stage"], "error": redact_text(e["error"])}
                 for e in self._entries
                 if e.get("error")
             ],
@@ -218,7 +219,7 @@ class TraceLogger:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
-                json.dumps(summary, ensure_ascii=False, indent=2, default=str),
+                json.dumps(redact_data(summary), ensure_ascii=False, indent=2, default=str),
                 encoding="utf-8",
             )
             logger.info("[TraceLogger] Wrote trace summary to %s", path)
