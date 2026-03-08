@@ -56,7 +56,8 @@ class _DummyRetrieverBackend:
 class Phase3ContractsTest(unittest.TestCase):
     def test_normalize_config_defaults(self) -> None:
         cfg = normalize_and_validate_config({})
-        self.assertEqual(cfg["providers"]["llm"]["backend"], "openai_chat")
+        self.assertEqual(cfg["llm"]["provider"], "gemini")
+        self.assertEqual(cfg["providers"]["llm"]["backend"], "gemini_chat")
         self.assertEqual(cfg["providers"]["search"]["backend"], "default_search")
         self.assertEqual(cfg["providers"]["retrieval"]["backend"], "default_retriever")
         self.assertIn("analysis_web_content_max_chars", cfg["agent"]["limits"])
@@ -90,6 +91,7 @@ class Phase3ContractsTest(unittest.TestCase):
         register_retriever_backend("dummy_retriever_contract", _DummyRetrieverBackend())
         cfg = normalize_and_validate_config(
             {
+                "llm": {"provider": "openai"},
                 "providers": {
                     "llm": {"backend": "dummy_llm_contract"},
                     "search": {"backend": "dummy_search_contract"},

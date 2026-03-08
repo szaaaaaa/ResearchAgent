@@ -12,7 +12,8 @@ class CoreConfigTest(unittest.TestCase):
 
         self.assertEqual(raw, {"llm": {"model": "x-model"}})
         self.assertEqual(out["llm"]["model"], "x-model")
-        self.assertEqual(out["providers"]["llm"]["backend"], "openai_chat")
+        self.assertEqual(out["llm"]["provider"], "gemini")
+        self.assertEqual(out["providers"]["llm"]["backend"], "gemini_chat")
         self.assertEqual(out["providers"]["search"]["backend"], "default_search")
         self.assertEqual(out["providers"]["retrieval"]["backend"], "default_retriever")
         self.assertIn("limits", out["agent"])
@@ -95,7 +96,7 @@ class CoreConfigTest(unittest.TestCase):
 
     def test_empty_backend_raises(self) -> None:
         with self.assertRaises(ValueError):
-            normalize_and_validate_config({"providers": {"llm": {"backend": "  "}}})
+            normalize_and_validate_config({"llm": {"provider": "  invalid  "}})
         with self.assertRaises(ValueError):
             normalize_and_validate_config({"providers": {"search": {"backend": ""}}})
         with self.assertRaises(ValueError):

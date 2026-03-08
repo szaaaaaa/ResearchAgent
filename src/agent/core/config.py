@@ -126,6 +126,21 @@ DEFAULT_RETRIEVAL_EMBEDDING_BACKEND = "local_st"
 DEFAULT_RETRIEVAL_REMOTE_EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_RETRIEVAL_RERANKER_BACKEND = "local_crossencoder"
 DEFAULT_RETRIEVAL_DEVICE = "auto"
+_LLM_PROVIDER_BY_BACKEND = {
+    "gemini_chat": "gemini",
+    "openai_chat": "openai",
+    "claude_chat": "claude",
+}
+_LLM_BACKEND_BY_PROVIDER = {
+    "gemini": "gemini_chat",
+    "openai": "openai_chat",
+    "claude": "claude_chat",
+}
+_DEFAULT_LLM_MODEL_BY_PROVIDER = {
+    "gemini": "gemini-3-pro-preview",
+    "openai": "gpt-4.1-mini",
+    "claude": "claude-sonnet-4-5",
+}
 
 
 def _to_bool(value: Any, default: bool) -> bool:
@@ -172,12 +187,23 @@ def normalize_and_validate_config(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
     out: Dict[str, Any] = deepcopy(cfg or {})
 
     llm_cfg = out.setdefault("llm", {})
-    llm_cfg.setdefault("model", "gpt-4.1-mini")
+    configured_provider = str(llm_cfg.get("provider", "")).strip().lower()
+    configured_backend = str(
+        out.setdefault("providers", {}).setdefault("llm", {}).get("backend", "")
+    ).strip().lower()
+    llm_provider = configured_provider or _LLM_PROVIDER_BY_BACKEND.get(configured_backend, "gemini")
+    if llm_provider not in {"gemini", "openai", "claude"}:
+        raise ValueError("llm.provider must be one of: gemini, openai, claude")
+    llm_cfg["provider"] = llm_provider
+    llm_cfg.setdefault("model", _DEFAULT_LLM_MODEL_BY_PROVIDER[llm_provider])
     llm_cfg.setdefault("temperature", 0.3)
 
     providers_cfg = out.setdefault("providers", {})
     providers_llm_cfg = providers_cfg.setdefault("llm", {})
-    providers_llm_cfg["backend"] = str(providers_llm_cfg.get("backend", "openai_chat")).strip().lower()
+    if not providers_llm_cfg.get("backend"):
+        providers_llm_cfg["backend"] = _LLM_BACKEND_BY_PROVIDER[llm_provider]
+    else:
+        providers_llm_cfg["backend"] = str(providers_llm_cfg.get("backend", "")).strip().lower()
     if not providers_llm_cfg["backend"]:
         raise ValueError("providers.llm.backend cannot be empty")
     providers_llm_cfg["retries"] = int(providers_llm_cfg.get("retries", 0))

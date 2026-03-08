@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 from src.agent.core.budget import BudgetGuard
 from src.agent.core import factories
+from src.agent.providers.llm_adapter import ModelResponse
 from src.agent.providers import llm_provider, retrieval_provider, search_provider
 
 
@@ -41,50 +42,58 @@ class FactoriesAndProvidersTest(unittest.TestCase):
         self.assertIs(out, dummy_backend)
 
     def test_call_llm_uses_provider_defaults(self) -> None:
-        backend = Mock()
-        backend.generate.return_value = "ok"
+        provider = Mock()
+        provider.generate.return_value = ModelResponse(content="ok", usage={}, model="provider-model")
         cfg = {
-            "llm": {},
+            "llm": {"provider": "openai"},
             "providers": {"llm": {"default_model": "provider-model", "default_temperature": 0.65}},
         }
-        with patch("src.agent.providers.llm_provider.create_llm_backend", return_value=backend):
-            result = llm_provider.call_llm(system_prompt="sys", user_prompt="usr", cfg=cfg)
+        with patch("src.agent.providers.llm_provider.ensure_plugins_registered"):
+            with patch("src.agent.providers.llm_provider.get_llm_provider", return_value=provider):
+                result = llm_provider.call_llm(system_prompt="sys", user_prompt="usr", cfg=cfg)
 
         self.assertEqual(result, "ok")
-        kwargs = backend.generate.call_args.kwargs
-        self.assertEqual(kwargs["model"], "provider-model")
-        self.assertAlmostEqual(kwargs["temperature"], 0.65, places=6)
-        self.assertEqual(kwargs["system_prompt"], "sys")
-        self.assertEqual(kwargs["user_prompt"], "usr")
+        request = provider.generate.call_args.args[0]
+        self.assertEqual(request.model, "provider-model")
+        self.assertAlmostEqual(request.temperature, 0.65, places=6)
+        self.assertEqual(request.system_prompt, "sys")
+        self.assertEqual(request.user_prompt, "usr")
 
     def test_call_llm_retries_then_succeeds(self) -> None:
-        backend = Mock()
-        backend.generate.side_effect = [RuntimeError("first"), "ok-after-retry"]
-        cfg = {"providers": {"llm": {"retries": 1, "retry_backoff_sec": 0.01, "backend": "dummy"}}}
-        with patch("src.agent.providers.llm_provider.create_llm_backend", return_value=backend):
-            with patch("src.agent.providers.llm_provider.time.sleep") as sleep_mock:
-                out = llm_provider.call_llm(system_prompt="s", user_prompt="u", cfg=cfg)
+        provider = Mock()
+        provider.generate.side_effect = [RuntimeError("first"), ModelResponse(content="ok-after-retry", usage={}, model="m")]
+        cfg = {"llm": {"provider": "gemini"}, "providers": {"llm": {"retries": 1, "retry_backoff_sec": 0.01, "backend": "dummy"}}}
+        with patch("src.agent.providers.llm_provider.ensure_plugins_registered"):
+            with patch("src.agent.providers.llm_provider.get_llm_provider", return_value=provider):
+                with patch("src.agent.providers.llm_provider.time.sleep") as sleep_mock:
+                    out = llm_provider.call_llm(system_prompt="s", user_prompt="u", cfg=cfg)
 
         self.assertEqual(out, "ok-after-retry")
-        self.assertEqual(backend.generate.call_count, 2)
+        self.assertEqual(provider.generate.call_count, 2)
         sleep_mock.assert_called_once_with(0.01)
 
     def test_call_llm_exhausts_retries_and_raises(self) -> None:
-        backend = Mock()
-        backend.generate.side_effect = RuntimeError("always-fail")
-        cfg = {"providers": {"llm": {"retries": 2, "retry_backoff_sec": 0, "backend": "dummy"}}}
-        with patch("src.agent.providers.llm_provider.create_llm_backend", return_value=backend):
-            with self.assertRaises(RuntimeError):
-                llm_provider.call_llm(system_prompt="s", user_prompt="u", cfg=cfg)
-        self.assertEqual(backend.generate.call_count, 3)
+        provider = Mock()
+        provider.generate.side_effect = RuntimeError("always-fail")
+        cfg = {"llm": {"provider": "gemini"}, "providers": {"llm": {"retries": 2, "retry_backoff_sec": 0, "backend": "dummy"}}}
+        with patch("src.agent.providers.llm_provider.ensure_plugins_registered"):
+            with patch("src.agent.providers.llm_provider.get_llm_provider", return_value=provider):
+                with self.assertRaises(RuntimeError):
+                    llm_provider.call_llm(system_prompt="s", user_prompt="u", cfg=cfg)
+        self.assertEqual(provider.generate.call_count, 3)
 
     def test_call_llm_records_budget_usage_when_guard_present(self) -> None:
-        backend = Mock()
-        backend.generate.return_value = "hello world"
+        provider = Mock()
+        provider.generate.return_value = ModelResponse(
+            content="hello world",
+            usage={"prompt_tokens": 3, "completion_tokens": 2},
+            model="m",
+        )
         guard = BudgetGuard(max_tokens=1000, max_api_calls=100, max_wall_time_sec=600)
-        cfg = {"providers": {"llm": {"backend": "dummy"}}, "_budget_guard": guard}
-        with patch("src.agent.providers.llm_provider.create_llm_backend", return_value=backend):
-            out = llm_provider.call_llm(system_prompt="sys", user_prompt="usr", cfg=cfg)
+        cfg = {"llm": {"provider": "gemini"}, "providers": {"llm": {"backend": "dummy"}}, "_budget_guard": guard}
+        with patch("src.agent.providers.llm_provider.ensure_plugins_registered"):
+            with patch("src.agent.providers.llm_provider.get_llm_provider", return_value=provider):
+                out = llm_provider.call_llm(system_prompt="sys", user_prompt="usr", cfg=cfg)
         self.assertEqual(out, "hello world")
         usage = guard.usage()
         self.assertEqual(usage["api_calls"], 1)

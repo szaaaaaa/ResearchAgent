@@ -5,17 +5,33 @@ import time
 from typing import Any, Dict
 
 from src.agent.core.events import emit_event
-from src.agent.core.factories import create_llm_backend
 from src.agent.core.failure import FailureAction, classify_failure
+from src.agent.plugins.bootstrap import ensure_plugins_registered
+from src.agent.providers.llm_adapter import ModelRequest, get_llm_provider
 
 logger = logging.getLogger(__name__)
 
 
-def _estimate_token_count(text: str) -> int:
-    # Lightweight estimator to avoid hard dependency on tokenizer packages.
-    if not text:
-        return 0
-    return max(1, int(len(text) / 4))
+_DEFAULT_MODEL_BY_PROVIDER = {
+    "gemini": "gemini-3-pro-preview",
+    "openai": "gpt-4.1-mini",
+    "claude": "claude-sonnet-4-5",
+}
+
+_PROVIDER_BY_BACKEND = {
+    "gemini_chat": "gemini",
+    "openai_chat": "openai",
+    "claude_chat": "claude",
+}
+
+
+def _resolve_provider_name(cfg: Dict[str, Any]) -> str:
+    llm_cfg = cfg.get("llm", {})
+    provider_name = str(llm_cfg.get("provider", "")).strip().lower()
+    if provider_name:
+        return provider_name
+    backend_name = str(cfg.get("providers", {}).get("llm", {}).get("backend", "")).strip().lower()
+    return _PROVIDER_BY_BACKEND.get(backend_name, "gemini")
 
 
 def call_llm(
@@ -32,43 +48,62 @@ def call_llm(
     """
     llm_cfg = cfg.get("llm", {})
     provider_cfg = cfg.get("providers", {}).get("llm", {})
+    provider_name = _resolve_provider_name(cfg)
 
     resolved_model = str(
         model
         or llm_cfg.get("model")
         or provider_cfg.get("default_model")
-        or "gpt-4.1-mini"
+        or _DEFAULT_MODEL_BY_PROVIDER.get(provider_name, "gpt-4.1-mini")
     )
     resolved_temperature = float(
         temperature
         if temperature is not None
         else llm_cfg.get("temperature", provider_cfg.get("default_temperature", 0.3))
     )
+    resolved_max_tokens = llm_cfg.get("max_tokens")
+    if resolved_max_tokens is not None:
+        resolved_max_tokens = int(resolved_max_tokens)
 
     retries = int(provider_cfg.get("retries", 0))
     backoff_sec = float(provider_cfg.get("retry_backoff_sec", 1.0))
-    backend_name = str(provider_cfg.get("backend", "openai_chat")).strip().lower()
+    backend_name = str(provider_cfg.get("backend", "")).strip().lower() or provider_name
     fallback_model = str(provider_cfg.get("fallback_model", "")).strip()
     if not fallback_model:
-        # Keep OpenAI historical behavior; avoid cross-provider fallback model mismatch by default.
-        fallback_model = "gpt-4.1-mini" if backend_name == "openai_chat" else resolved_model
-    backend = create_llm_backend(cfg)
+        fallback_model = _DEFAULT_MODEL_BY_PROVIDER.get(provider_name, resolved_model)
+    ensure_plugins_registered()
+    adapter = get_llm_provider(provider_name)
     backoff_used = False
 
     last_err: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            output = backend.generate(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                model=resolved_model,
-                temperature=resolved_temperature,
-                cfg=cfg,
+            response = adapter.generate(
+                ModelRequest(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    model=resolved_model,
+                    temperature=resolved_temperature,
+                    max_tokens=resolved_max_tokens,
+                    cfg=cfg,
+                )
             )
+            output = response.content
+            usage = dict(response.usage)
+            prompt_tokens = int(
+                usage.get("prompt_tokens")
+                or 0
+            )
+            completion_tokens = int(
+                usage.get("completion_tokens")
+                or 0
+            )
+            if prompt_tokens <= 0:
+                prompt_tokens = 0
+            if completion_tokens <= 0:
+                completion_tokens = 0
             guard = cfg.get("_budget_guard")
             if guard and hasattr(guard, "record_llm_call"):
-                prompt_tokens = _estimate_token_count(system_prompt) + _estimate_token_count(user_prompt)
-                completion_tokens = _estimate_token_count(str(output))
                 guard.record_llm_call(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
             return output
         except Exception as exc:  # pragma: no cover - network path
@@ -100,17 +135,22 @@ def call_llm(
                 )
                 resolved_model = fallback_model
                 try:
-                    output = backend.generate(
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        model=resolved_model,
-                        temperature=resolved_temperature,
-                        cfg=cfg,
+                    response = adapter.generate(
+                        ModelRequest(
+                            system_prompt=system_prompt,
+                            user_prompt=user_prompt,
+                            model=resolved_model,
+                            temperature=resolved_temperature,
+                            max_tokens=resolved_max_tokens,
+                            cfg=cfg,
+                        )
                     )
+                    output = response.content
+                    usage = dict(response.usage)
+                    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                    completion_tokens = int(usage.get("completion_tokens") or 0)
                     guard = cfg.get("_budget_guard")
                     if guard and hasattr(guard, "record_llm_call"):
-                        prompt_tokens = _estimate_token_count(system_prompt) + _estimate_token_count(user_prompt)
-                        completion_tokens = _estimate_token_count(str(output))
                         guard.record_llm_call(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
                     return output
                 except Exception as backoff_exc:

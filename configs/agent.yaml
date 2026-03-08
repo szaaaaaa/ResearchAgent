@@ -45,6 +45,7 @@ retrieval:
   reranker_backend: local_crossencoder
   reranker_model: BAAI/bge-reranker-v2-m3
 llm:
+  provider: gemini
   model: gemini-3-pro-preview
   temperature: 0.3
 providers:
