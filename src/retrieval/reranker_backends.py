@@ -67,3 +67,4 @@ def rerank_hits(
         reranked.append(entry)
     reranked.sort(key=lambda item: item["reranker_score"], reverse=True)
     return reranked
+

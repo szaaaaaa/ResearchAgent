@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import argparse
 
+from src.agent.infra.search.sources import fetch_arxiv_records
 from src.common.arg_utils import add_fetch_control_args, add_fetch_storage_args
 from src.common.cli_utils import add_config_arg, parse_args_and_cfg, run_cli
-from src.common.rag_config import fetch_delay, fetch_download, fetch_max_results, papers_dir, sqlite_path
-from src.workflows.traditional_rag import fetch_arxiv_records
+from src.common.rag_config import (
+    fetch_delay,
+    fetch_download,
+    fetch_max_results,
+    ingest_latex_download_source,
+    ingest_latex_source_dir,
+    papers_dir,
+    sqlite_path,
+)
 
 
 def main() -> int:
@@ -22,6 +30,8 @@ def main() -> int:
     max_results = fetch_max_results(cfg, args.max_results)
     polite_delay_sec = fetch_delay(cfg, args.polite_delay_sec)
     download = fetch_download(cfg, args.download)
+    download_source = ingest_latex_download_source(cfg)
+    source_dir = ingest_latex_source_dir(root, cfg)
 
     print(">> fetch_arxiv start")
     print(f">> query = {args.query}")
@@ -37,6 +47,8 @@ def main() -> int:
         papers_dir=str(papers_dir_v),
         max_results=max_results,
         download=download,
+        download_source=download_source,
+        source_dir=str(source_dir),
         polite_delay_sec=polite_delay_sec,
     )
 

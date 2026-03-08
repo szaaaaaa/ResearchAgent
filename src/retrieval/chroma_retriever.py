@@ -3,27 +3,25 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List
 
-from src.rag.reranker_backends import rerank_hits as rerank_hits_with_backend
-
-DEFAULT_MODEL = "all-MiniLM-L6-v2"
-DEFAULT_BACKEND = "local_st"
+from src.retrieval.embeddings import DEFAULT_BACKEND, DEFAULT_MODEL, embed_text
+from src.retrieval.reranker_backends import rerank_hits as rerank_hits_with_backend
 
 _VISUAL_INTENT_TERMS = {
     "figure", "fig", "diagram", "architecture", "plot", "chart",
     "table", "visualization", "illustration", "schematic", "overview",
     "flowchart", "pipeline", "framework",
-    "图", "图表", "架构图", "流程图", "示意图", "框架图",
+    "图", "图表", "架构", "流程图", "示意图", "可视化",
 }
 _FORMULA_INTENT_TERMS = {
     "equation", "formula", "derive", "derivation", "proof",
     "theorem", "lemma", "corollary", "mathematical",
-    "公式", "方程", "推导", "证明", "定理",
+    "公式", "推导", "证明", "定理", "引理",
 }
 _VISUAL_FIGURE_BONUS = 0.003
 _FORMULA_MATH_BONUS = 0.002
 
 
-def _detect_query_intent(query: str) -> str:
+def detect_query_intent(query: str) -> str:
     q_lower = str(query or "").lower()
     tokens = set(re.findall(r"[a-zA-Z\u4e00-\u9fff]+", q_lower))
     if (tokens & _VISUAL_INTENT_TERMS) or any(term in q_lower for term in _VISUAL_INTENT_TERMS if any("\u4e00" <= ch <= "\u9fff" for ch in term)):
@@ -52,7 +50,7 @@ def _base_rank_score(hit: Dict[str, Any]) -> float:
     return 0.0
 
 
-def _apply_intent_prior(hits: List[Dict[str, Any]], intent: str) -> List[Dict[str, Any]]:
+def apply_intent_prior(hits: List[Dict[str, Any]], intent: str) -> List[Dict[str, Any]]:
     if intent == "general":
         return hits
 
@@ -80,7 +78,6 @@ def _reciprocal_rank_fusion(
     id_key: str = "id",
     k: int = 60,
 ) -> List[Dict[str, Any]]:
-    """Merge multiple ranked lists via RRF.  Returns items sorted by fused score."""
     scores: Dict[str, float] = {}
     items: Dict[str, Dict[str, Any]] = {}
     for ranking in rankings:
@@ -97,7 +94,7 @@ def _reciprocal_rank_fusion(
     return fused
 
 
-def _collapse_figure_duplicates(hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def collapse_figure_duplicates(hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen: set[str] = set()
     out: List[Dict[str, Any]] = []
     for hit in hits:
@@ -116,7 +113,7 @@ def _collapse_figure_duplicates(hits: List[Dict[str, Any]]) -> List[Dict[str, An
     return out
 
 
-def _ensure_figure_presence(
+def ensure_figure_presence(
     hits: List[Dict[str, Any]],
     *,
     top_k: int,
@@ -157,27 +154,12 @@ class Retriever:
         reranker_backend_name: str = "local_crossencoder",
         cfg: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]:
-        """Retrieve relevant chunks.
-
-        Parameters
-        ----------
-        allowed_doc_ids:
-            When provided, restricts retrieval to chunks whose ``doc_id``
-            metadata field is in this list (run_view isolation).  Pass
-            ``None`` to query the entire collection (traditional RAG mode).
-        hybrid:
-            When True, also run BM25 search and fuse results via RRF.
-            Requires ``persist_dir`` and ``collection_name``.
-        """
         if top_k <= 0:
             raise ValueError("top_k must be > 0")
 
         if candidate_k is None and reranker_model:
             candidate_k = max(top_k * 3, top_k)
         n_results = max(top_k, candidate_k or top_k)
-
-        # --- Dense retrieval via Chroma ---
-        from src.rag.embeddings import embed_text
 
         q_emb = embed_text(
             query,
@@ -218,9 +200,8 @@ class Retriever:
         ):
             dense_hits.append({"id": _id, "text": doc, "meta": meta, "distance": float(dist)})
 
-        # --- Optional BM25 hybrid ---
         if hybrid and persist_dir and collection_name:
-            from src.rag.bm25_index import search_bm25
+            from src.retrieval.bm25_index import search_bm25
 
             bm25_hits = search_bm25(
                 persist_dir=persist_dir,
@@ -230,7 +211,6 @@ class Retriever:
                 allowed_doc_ids=list(allowed_doc_ids) if allowed_doc_ids else None,
             )
             if bm25_hits:
-                # Enrich BM25 hits with text/meta from dense results for reranker
                 dense_map = {h["id"]: h for h in dense_hits}
                 enriched_bm25: List[Dict[str, Any]] = []
                 for bh in bm25_hits:
@@ -243,7 +223,6 @@ class Retriever:
 
                 fused = _reciprocal_rank_fusion(dense_hits, enriched_bm25)
 
-                # Fill in missing text/meta from Chroma for BM25-only hits
                 missing_ids = [h["id"] for h in fused if not h.get("text")]
                 if missing_ids:
                     try:
@@ -264,9 +243,9 @@ class Retriever:
         else:
             out = dense_hits
 
-        intent = _detect_query_intent(query)
+        intent = detect_query_intent(query)
         if intent != "general":
-            out = _apply_intent_prior(out, intent)
+            out = apply_intent_prior(out, intent)
         if reranker_model:
             out = rerank_hits_with_backend(
                 query,
@@ -275,9 +254,9 @@ class Retriever:
                 backend_name=reranker_backend_name,
                 cfg=cfg,
             )
-        out = _collapse_figure_duplicates(out)
+        out = collapse_figure_duplicates(out)
         if intent == "visual":
-            out = _ensure_figure_presence(out, top_k=top_k)
+            out = ensure_figure_presence(out, top_k=top_k)
         return out[:top_k]
 
 

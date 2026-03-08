@@ -16,35 +16,9 @@ from src.common.rag_config import (
     ingest_text_extraction,
     retrieval_effective_embedding_model,
     retrieval_embedding_backend,
-    retrieval_reranker_backend,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def fetch_arxiv_records(
-    *,
-    query: str,
-    sqlite_path: str,
-    papers_dir: str,
-    max_results: int,
-    download: bool,
-    download_source: bool = False,
-    source_dir: str = "data/sources",
-    polite_delay_sec: float,
-) -> List[Any]:
-    from src.ingest.fetchers import fetch_arxiv_and_store
-
-    return fetch_arxiv_and_store(
-        query=query,
-        sqlite_path=sqlite_path,
-        papers_dir=papers_dir,
-        max_results=max_results,
-        download=download,
-        download_source=download_source,
-        source_dir=source_dir,
-        polite_delay_sec=polite_delay_sec,
-    )
 
 
 def list_pdfs(*, papers_dir: Path, pdf_path: str | None = None) -> List[Path]:
@@ -101,7 +75,7 @@ def index_pdfs(
         extract_figures,
     )
     from src.ingest.indexer import build_chroma_index
-    from src.ingest.latex_loader import ArxivSource, parse_latex
+    from src.ingest.latex_loader import parse_latex
     from src.ingest.pdf_loader import load_pdf_text
 
     cfg = cfg or {}
@@ -189,8 +163,6 @@ def index_pdfs(
             except Exception as exc:
                 logger.warning("Figure processing failed for %s: %s", doc_id, exc)
 
-        # In agent mode (run_id set): skip deletion so the global index stays
-        # coherent across runs. Dedup is handled inside build_chroma_index.
         if not run_id and not keep_old:
             _delete_old_chunks(persist_dir, collection_name, doc_id)
 
@@ -229,7 +201,7 @@ def index_pdfs(
     }
 
 
-def _resolve_latex_source(*, doc_id: str, source_dir: Path) -> ArxivSource | None:
+def _resolve_latex_source(*, doc_id: str, source_dir: Path):
     if not doc_id.startswith("arxiv_"):
         return None
     arxiv_id = doc_id[len("arxiv_") :]
@@ -249,40 +221,3 @@ def _resolve_latex_source(*, doc_id: str, source_dir: Path) -> ArxivSource | Non
         main_tex=_pick_main_tex(tex_files, arxiv_id),
         image_files=image_files,
     )
-
-
-def answer_question(
-    *,
-    persist_dir: str,
-    collection_name: str,
-    question: str,
-    top_k: int,
-    model: str,
-    temperature: float,
-    candidate_k: int | None = None,
-    reranker_model: str | None = None,
-    embedding_model: str = "all-MiniLM-L6-v2",
-    hybrid: bool = False,
-    cfg: Dict[str, Any] | None = None,
-) -> Dict[str, Any]:
-    from src.rag.answerer import answer_with_openai_chat
-    from src.rag.cite_prompt import build_cited_prompt
-    from src.rag.retriever import retrieve
-
-    cfg = cfg or {}
-    hits = retrieve(
-        persist_dir=persist_dir,
-        collection_name=collection_name,
-        query=question,
-        top_k=top_k,
-        candidate_k=candidate_k,
-        reranker_model=reranker_model,
-        model_name=retrieval_effective_embedding_model(cfg, embedding_model),
-        hybrid=hybrid,
-        embedding_backend_name=retrieval_embedding_backend(cfg),
-        reranker_backend_name=retrieval_reranker_backend(cfg),
-        cfg=cfg,
-    )
-    prompt = build_cited_prompt(question=question, hits=hits)
-    answer = answer_with_openai_chat(prompt=prompt, model=model, temperature=temperature)
-    return {"hits": hits, "prompt": prompt, "answer": answer}

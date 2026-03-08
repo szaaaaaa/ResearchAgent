@@ -27,7 +27,7 @@ def index_pdf_documents(
     allow_existing_doc_updates: bool = False,
     include_text_chunks: bool = True,
 ):
-    from src.workflows.traditional_rag import index_pdfs
+    from src.ingest.pdf_indexing import index_pdfs
 
     return index_pdfs(
         persist_dir=persist_dir,

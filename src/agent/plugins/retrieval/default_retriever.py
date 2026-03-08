@@ -9,7 +9,7 @@ from src.common.rag_config import (
     retrieval_embedding_backend,
     retrieval_reranker_backend,
 )
-from src.rag.embeddings import DEFAULT_MODEL
+from src.retrieval.embeddings import DEFAULT_MODEL
 
 
 class DefaultRetrieverBackend:

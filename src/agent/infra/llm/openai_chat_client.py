@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from src.rag.answerer import answer_with_openai_chat
+import os
+
+from openai import OpenAI
 
 
 def generate_chat_completion(
@@ -10,9 +12,17 @@ def generate_chat_completion(
     model: str,
     temperature: float,
 ) -> str:
-    return answer_with_openai_chat(
-        prompt=user_prompt,
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("Missing OPENAI_API_KEY in environment variables.")
+
+    client = OpenAI(api_key=api_key)
+    resp = client.chat.completions.create(
         model=model,
         temperature=temperature,
-        system_prompt=system_prompt,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
     )
+    return resp.choices[0].message.content or ""

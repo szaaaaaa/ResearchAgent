@@ -4,8 +4,8 @@ from typing import Any, Dict, List
 
 import numpy as np
 
-from src.rag.embedding_backends import embedding_dim as backend_embedding_dim
-from src.rag.embedding_backends import embed_texts as backend_embed_texts
+from src.retrieval.embedding_backends import embedding_dim as backend_embedding_dim
+from src.retrieval.embedding_backends import embed_texts as backend_embed_texts
 
 DEFAULT_MODEL = "all-MiniLM-L6-v2"
 DEFAULT_BACKEND = "local_st"
@@ -56,3 +56,4 @@ def embedding_dim(
         model_name=model_name,
         cfg=cfg,
     )
+

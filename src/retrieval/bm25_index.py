@@ -17,7 +17,6 @@ def build_bm25_sidecar(
     chunk_ids: List[str],
     chunk_texts: List[str],
 ) -> None:
-    """Append chunks to a JSON-lines sidecar file for BM25 retrieval."""
     path = _sidecar_path(persist_dir, collection_name)
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -42,7 +41,6 @@ def search_bm25(
     top_k: int,
     allowed_doc_ids: List[str] | None = None,
 ) -> List[Dict[str, Any]]:
-    """Return top_k BM25 hits as [{id, bm25_score}]."""
     from rank_bm25 import BM25Okapi
 
     path = _sidecar_path(persist_dir, collection_name)
@@ -80,3 +78,4 @@ def search_bm25(
 
 def _sidecar_path(persist_dir: str, collection_name: str) -> Path:
     return Path(persist_dir) / f"{collection_name}_bm25.jsonl"
+

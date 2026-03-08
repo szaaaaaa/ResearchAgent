@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from src.rag.embeddings import DEFAULT_BACKEND, DEFAULT_MODEL
-from src.rag.retriever import retrieve
+from src.retrieval.chroma_retriever import retrieve
+from src.retrieval.embeddings import DEFAULT_BACKEND, DEFAULT_MODEL
 
 
 def retrieve_chunks(

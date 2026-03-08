@@ -28,7 +28,7 @@ The UI should preserve the same model:
 
 These rules are mandatory for the UI:
 
-1. Do not save API keys, tokens, secrets, or passwords into `agent.yaml`, `rag.yaml`, or any exported plain config.
+1. Do not save API keys, tokens, secrets, or passwords into `agent.yaml` or any exported plain config.
 2. Only store secret references in config, such as `providers.llm.gemini_api_key_env` or `retrieval.openai_api_key_env`.
 3. Validate user input before saving. Any config field whose key matches `api_key`, `token`, `secret`, `password`, `authorization`, `access_key`, `private_key`, or `client_secret` must be rejected as inline config.
 4. Show secrets in the UI only as masked values.
@@ -533,7 +533,7 @@ This is enough to eliminate manual YAML editing for most users while staying ali
 ## Implementation Notes
 
 - The UI should treat `agent.yaml` as the main editable profile for the autonomous agent workflow.
-- `rag.yaml` can later support a separate "Traditional RAG" mode if that workflow is exposed in the product.
+- The current codebase ships a single `agent.yaml` runtime config; any future alternate workflow should define its own explicit config surface instead of reviving `rag.yaml`.
 - The UI should call the same normalization path used by the CLI before saving or running.
 - The UI should never duplicate default logic that already exists in `src/agent/core/config.py`; instead it should either import that logic or mirror it through a backend service boundary.
 - Any future remote UI or multi-user UI should replace process environment storage with a proper encrypted secret backend.

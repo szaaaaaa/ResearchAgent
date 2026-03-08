@@ -10,7 +10,7 @@ from src.common.rag_config import (
     retrieval_reranker_backend,
     retrieval_runtime_mode,
 )
-from src.rag.reranker_backends import rerank_hits
+from src.retrieval.reranker_backends import rerank_hits
 
 
 class RuntimeModesTest(unittest.TestCase):

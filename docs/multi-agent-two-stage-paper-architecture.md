@@ -1,858 +1,904 @@
-# ResearchAgent v2 Lite: 5-Agent 两阶段论文生成升级方案
+# ResearchAgent vNext: 从 RAG Agent 到 Research Operating System
+
+> 日期：2026-03-08
 
 ## 1. 文档定位
 
-本文档定义 `ResearchAgent` 的下一阶段升级方案。
+本文档重新定义 `ResearchAgent` 的升级方向。
 
-目标不是一次性做出“最终形态的超复杂多 agent 系统”，而是在当前代码库基础上，落地一个：
+目标不再是继续把当前的 `RAG + graph` 主流程做厚，而是把系统升级为一个面向科研全流程的 `Research Operating System`，服务于最终目标：
 
-- `5` 个以内核心 agent
-- `2` 个清晰阶段
-- `2` 次强制挑错 / 辩论审查
-- `1` 个受控实验执行层
+`AI scientist assistant`
 
-的可实施版本。
+目标能力范围：
 
-这份文档明确取代此前偏重的“大而全蓝图”，改为 `v2-lite` 方案。
+- `literature search`
+- `paper parsing`
+- `experiment planning`
+- `code generation`
+- `experiment running`
+- `result analysis`
+- `paper writing`
 
----
+本文档重点回答三个问题：
 
-## 2. 为什么要收缩方案
-
-之前的规划存在两个问题：
-
-
-1. agent 数量过多
-2. 基础设施目标过重
-
-对当前代码库来说，以下设计都过于超前：
-
-- 十几个 specialist agent 同时协作
-- 一次上齐完整 artifact registry / lineage / version store
-- 一次支持 `local + ssh + slurm + k8s + ray`
-- 一开始就做全量 reviewer 群
-
-这会直接带来：
-
-1. 研发周期过长
-2. 调试和测试复杂度激增
-3. 很难判断到底是哪一层出错
-4. 容易做成“看起来先进，但实际不稳定”
-
-因此 v2 应先压缩成一个可以稳定跑通的结构。
+1. `frontier reasoning model`、`skills`、`multi-agent` 三者分别承担什么职责
+2. 它们应该如何组合成 Research OS
+3. 当前仓库应该如何重构，而不是继续在现有 graph 上叠复杂度
 
 ---
 
-## 3. 总体目标
+## 2. 核心判断
 
-`ResearchAgent v2 Lite` 的目标是：
+### 2.1 不是“更大的 Agent”，而是“更好的分层”
 
-1. 让系统从“单次生成研究报告”升级为“两阶段生成论文”
-2. 让系统从“单主流程 + reviewer gate”升级为“少量核心 agent + 结构化挑错”
-3. 让实验设计不止停留在文本建议，而是可以进入受控执行层
-4. 让最终论文生成之前，必须经过对抗式审查环节
+当前项目的问题，不是能力不够，而是主抽象不对。
 
-一句话概括：
+当前主抽象仍然是：
 
-`先生成，再挑错，再修正，再成稿。`
+- `graph node`
+- `stage`
+- `reviewer gate`
 
----
+这对单条研究报告流水线有效，但不适合作为长期演进到 `AI scientist assistant` 的基础。
 
-## 4. 标准论文骨架
+Research OS 的主抽象应该改为：
 
-最终论文默认采用通用科研论文骨架：
+- `agent role`
+- `skill`
+- `artifact`
+- `runtime`
 
-1. `Title`
-2. `Abstract`
-3. `Introduction`
-4. `Related Work`
-5. `Background / Problem Formulation`
-6. `Method / Proposed Approach`
-7. `Experimental Setup`
-8. `Results`
-9. `Discussion`
-10. `Limitations`
-11. `Conclusion`
-12. `References`
-13. `Appendix / Supplementary`
+### 2.2 Frontier Reasoning Model、Skills、Multi-Agent 的关系
 
-但不是所有章节在同一时刻生成。
+本文档采用如下假设：
 
----
+- `frontier reasoning model` 是默认的前沿通用推理内核
+- `skills` 是可复用、可组合、可测试的能力单元
+- `multi-agent` 是角色分工与审查机制，不是能力重复实现
 
-## 5. 两阶段论文生成
+因此三者关系不是并列的，而是分层的：
 
-## 5.1 阶段一：前实验阶段
+1. `frontier reasoning model` 提供强推理、规划、综合、工具调用能力
+2. `skills` 提供稳定的研究动作能力
+3. `multi-agent` 通过不同角色调用不同 skill 组合，形成协作与对抗审查
 
-阶段一的目标是：
+一句话：
 
-- 完整介绍 topic 所属领域
-- 形成结构化 related work
-- 分析 gap 与机会点
-- 给出 hypothesis / method idea
-- 生成可执行的实验设计
-- 写出论文前半部分草稿
+`大模型是脑，skills 是手，multi-agent 是组织结构，runtime 是操作系统。`
 
-阶段一重点章节：
+### 2.3 最重要的设计原则
 
-1. `Introduction`
-2. `Related Work`
-3. `Background / Problem Formulation`
-4. `Method Idea / Hypothesis`
-5. `Experimental Setup Plan`
-
-阶段一不是定稿。
-
-阶段一产出的内容必须明确区分：
-
-- 已由文献支持的内容
-- 研究假设
-- 尚未验证的实验预期
-
-严禁在阶段一把“预期结果”写成“已证明结果”。
-
-## 5.2 阶段二：后实验阶段
-
-阶段二在真实实验结果回写后启动。
-
-阶段二的目标是：
-
-- 吸收实验结果
-- 写出 `Results`
-- 写出 `Discussion`
-- 写出 `Limitations`
-- 写出 `Conclusion`
-- 最后重写 `Abstract`
-- 统一润色成稿
-
-阶段二重点章节：
-
-1. `Results`
-2. `Discussion`
-3. `Limitations`
-4. `Conclusion`
-5. `Abstract`
-
-这里有一个硬规则：
-
-`Abstract` 必须最后重写。
-
-原因很简单：
-
-如果没有真实结果约束，Abstract 很容易写成“看起来像论文摘要，但事实上没有完成闭环”。
+1. 不把每个 agent 都做成一套私有逻辑
+2. 不把 skills 仅当作外部平台提示词附件
+3. 不让多 agent 直接建立在当前厚 graph 之上
+4. 不把 Research OS 做成“无限角色 + 无限流程”的膨胀系统
 
 ---
 
-## 6. 5 个核心 Agent
+## 3. Research OS 的目标架构
 
-v2 Lite 只保留 5 个核心 agent。
+## 3.1 分层架构
 
-## 6.1 Planner
+```text
+User / UI / CLI
+    -> Research Runtime
+        -> Agent Layer
+            -> Skill Layer
+                -> Executor / Provider Layer
+                    -> Infra Layer
+                        -> External Systems
+```
+
+### Layer 1: Research Runtime
 
 职责：
 
-- 理解用户 topic
-- 决定任务类型
-- 生成研究计划
-- 划分阶段一 / 阶段二目标
-- 给出停止条件与预算约束
-
-输入：
-
-- topic
-- 用户约束
-- 运行配置
-
-输出：
-
-- `TopicBrief`
-- `ResearchPlan`
-- `SectionPlan`
+- run lifecycle
+- state / checkpoint / resume
+- budget / timeout / retry policy
+- artifact persistence
+- HITL gate
+- audit trail
 
 说明：
 
-`Planner` 不是写作者，也不是 reviewer。它只负责把任务拆对。
+这一层不能消失。
+即使使用最强模型和 skills，也仍然需要最薄的一层 OS runtime 来维持任务可恢复、可追踪、可控。
 
-## 6.2 Researcher
+### Layer 2: Agent Layer
 
 职责：
 
-- 负责检索
-- 负责阅读文献
-- 负责构建 related work
-- 负责 gap 分析
-- 负责提出 idea 候选
+- 角色分工
+- 决策谁调用哪个 skill
+- 解释 artifact
+- 发起 critique / revision / block
 
-输入：
+这一层不是能力实现层，而是“角色与协作层”。
+
+### Layer 3: Skill Layer
+
+职责：
+
+- 封装高频研究能力
+- 接受结构化输入，输出结构化 artifact
+- 可单独测试、单独升级、单独限权
+
+这一层是未来系统的核心资产。
+
+### Layer 4: Executor / Provider Layer
+
+职责：
+
+- skill 调用时的执行桥接
+- 搜索、索引、检索、LLM、代码执行、远程实验等后端访问
+
+这一层当前仓库已经有基础，不应推倒重写。
+
+### Layer 5: Infra Layer
+
+职责：
+
+- Chroma / BM25 / PDF parsing / figure extraction / SSH runner / local runner / external APIs
+
+这一层是底层能力设施。
+
+---
+
+## 4. Frontier Model 在系统中的位置
+
+## 4.1 不把具体模型当作“一个最终产品”，而当作“默认认知内核”
+
+`frontier reasoning model` 在本架构中不是一个具体 UI 产品概念，而是：
+
+- 默认的通用 reasoning engine
+- 默认的 planning / synthesis / critique engine
+- 默认的 skill caller
+
+也就是说：
+
+- agent role 不等于不同模型
+- 大多数角色可以共享同一个前沿模型
+- 差异来自：`system prompt + role policy + allowed skills + artifact contract`
+
+默认可接入的模型可以是：
+
+- `Gemini 3 Pro`
+- `ChatGPT 5.4`
+- `Claude`
+
+这里真正要绑定的不是某一家模型，而是一个可替换的模型接口。
+
+## 4.2 为什么不建议“一角色一模型栈”
+
+如果每个 agent 都有自己独立的一套模型、工具和逻辑，会带来：
+
+1. 行为难以对齐
+2. 成本难以控制
+3. 问题难以归因
+4. 角色演进越来越重
+
+更好的做法是：
+
+- 共享统一的 frontier model kernel
+- 用 skill profile 和角色约束来形成差异
+
+也就是说：
+
+`同一个大脑，不同的手，不同的权限，不同的职责。`
+
+## 4.3 模型切换的接口边界
+
+为了支持 `Gemini 3 Pro / ChatGPT 5.4 / Claude` 可切换，模型层必须下沉到独立 provider adapter。
+
+推荐边界：
+
+```text
+Agent / Skill
+    -> LLMProvider
+        -> OpenAIAdapter / GeminiAdapter / ClaudeAdapter
+```
+
+统一接口只暴露最小能力：
+
+- `generate`
+- `stream`
+- `tool_call`
+- `structured_output`
+
+同时在 provider adapter 内部统一：
+
+- message schema
+- tool schema
+- structured output contract
+- trace event contract
+
+这样 agent、skill、artifact 都不需要感知底层模型供应商。
+
+## 4.4 哪些能力必须保持模型无关
+
+以下能力必须保留在 Research OS 自己的 runtime / executors / infra 中，而不是绑定某家模型的 built-in tools：
+
+- literature search
+- paper parsing
+- retrieval
+- code execution
+- experiment running
+- artifact persistence
+
+模型主要负责：
+
+- reasoning
+- planning
+- critique
+- structured generation
+- skill selection
+
+---
+
+## 5. Multi-Agent 在 Research OS 中如何落地
+
+## 5.1 不再沿用“无限 specialist agent”思路
+
+当前升级方向不应是：
+
+- 越来越多 agent
+- 每个 agent 一点点能力
+- agent 间自由群聊式协作
+
+这会直接带来：
+
+1. runtime 复杂度失控
+2. 调试困难
+3. 责任边界模糊
+4. 角色之间大量重复能力
+
+## 5.2 长期收敛为 6 个角色
+
+为覆盖 Research OS 的核心能力，推荐收敛为以下 6 个逻辑角色：
+
+1. `Conductor`
+2. `Researcher`
+3. `Experimenter`
+4. `Analyst`
+5. `Writer`
+6. `Critic`
+
+这是比此前 `5-agent 两阶段论文系统` 更贴近 `Research OS` 的版本，但仍然是收敛的，不是膨胀的。
+
+## 5.3 第一阶段先做 3-Agent MVP
+
+第一阶段不直接落完整 6 角色，而是先收敛成：
+
+1. `Conductor`
+2. `Researcher`
+3. `Critic`
+
+原因很直接：
+
+1. 当前最先要跑通的是文献综述闭环
+2. `Experimenter / Analyst / Writer` 依赖后续实验执行与写作链路
+3. 3-agent MVP 已足够验证 skills、artifacts、critique loop 是否成立
+
+第一阶段目标不是完整 Research OS，而是：
+
+`先把 literature review / related work / gap analysis 跑通。`
+
+### 1. Conductor
+
+职责：
+
+- topic intake
+- task decomposition
+- phase planning
+- budget / policy control
+- 决定下一步调用哪个 agent / skill
+
+它是“控制平面”，不是内容生产者。
+
+### 2. Researcher
+
+职责：
+
+- literature search
+- paper parsing
+- corpus curation
+- related work synthesis
+- gap mapping
+- hypothesis candidate generation
+
+它吸收当前仓库的：
+
+- retrieval
+- indexing
+- analysis
+- 部分 synthesis
+
+### 3. Experimenter
+
+职责：
+
+- experiment planning
+- code generation / code patch suggestion
+- run spec generation
+- 提交实验到 local / ssh runner
+
+它不是简单的“写实验计划”，而是从 idea 进入可执行研究任务。
+
+### 4. Analyst
+
+职责：
+
+- experiment result ingestion
+- metrics normalization
+- result interpretation
+- table / figure summary
+- consistency check with hypothesis
+
+这一步必须从 `Experimenter` 独立出来，否则“设计实验”和“解释结果”会耦合过深。
+
+### 5. Writer
+
+职责：
+
+- stage draft writing
+- manuscript assembly
+- abstract rewrite
+- style normalization
+- final paper writing
+
+Writer 只负责写，不负责自证正确。
+
+### 6. Critic
+
+职责：
+
+- challenge current artifacts
+- catch unsupported claims
+- detect weak novelty / weak experimental validity / overclaiming
+- decide `pass` / `revise_then_continue` / `block`
+
+Critic 是质量控制层，不是内容生成层。
+
+## 5.4 为什么没有单独的 Code Agent / Runner Agent
+
+当前阶段不建议再把 `code generation` 和 `experiment running` 再拆成两个公开角色。
+
+原因：
+
+1. 会增加调度复杂度
+2. 对当前项目阶段来说收益不高
+3. 它们更适合作为 `Experimenter` 的 skill 组，而不是独立 agent
+
+所以：
+
+- `code generation` 是 skill
+- `experiment running` 是 skill
+- `Experimenter` 是调用它们的 agent
+
+---
+
+## 6. Skills 在 Research OS 中如何定义
+
+## 6.1 Skills 不是“随手加一个工具说明”
+
+Research OS 中的 skill 必须是一等能力单元。
+
+每个 skill 至少需要有：
+
+- `skill_id`
+- `purpose`
+- `input_artifacts`
+- `output_artifacts`
+- `allowed_tools`
+- `model_profile`
+- `budget_policy`
+- `validation_rule`
+
+也就是说，skill 必须是：
+
+- 可调用
+- 可复用
+- 可替换
+- 可测试
+- 可审计
+
+## 6.2 Skill 的粒度原则
+
+不建议：
+
+- 一函数一个 skill
+- 一节点一个 skill
+- 一角色一套私有 skill
+
+建议粒度：
+
+- 一类完整研究动作 = 一个 skill
+
+例如：
+
+- `search_literature`
+- `parse_paper_bundle`
+- `build_related_work_matrix`
+- `design_experiment`
+- `generate_research_code`
+- `submit_experiment_run`
+- `analyze_result_bundle`
+- `write_manuscript_section`
+- `critique_stage_draft`
+
+## 6.3 第一批 Skill 必须严格对应现有实现
+
+Skill catalog 可以前瞻性地规划更多条目，但代码中实际落地的第一批 skill 必须有现成的 stage/reviewer 支撑。以下是严格的 1:1 映射：
+
+| Skill ID | 现有实现 | 入口函数 |
+|---|---|---|
+| `plan_research` | `stages/planning.py` | `run_planning()` |
+| `search_literature` | `stages/retrieval.py` | `run_retrieval()` |
+| `parse_paper_bundle` | `stages/indexing.py` | `run_indexing()` |
+| `extract_paper_notes` | `stages/analysis.py` | `run_analysis()` |
+| `build_related_work_matrix` | `stages/synthesis.py` | `run_synthesis()` |
+| `design_experiment` | `stages/experiments.py` | `run_experiment_recommendation()` |
+| `generate_report` | `stages/reporting.py` | `run_reporting()` |
+| `critique_retrieval` | `reviewers/retrieval_reviewer.py` | `run_retrieval_review()` |
+| `critique_experiment` | `reviewers/experiment_reviewer.py` | `run_experiment_review()` |
+| `critique_claims` | `reviewers/post_report_review.py` | `review_claims_and_citations()` |
+
+尚无实现的 skill（如 `dedupe_and_rank_sources`、`normalize_metrics`、`patch_existing_codebase`）只在 catalog 文档中列出，不在第一版代码中创建空壳。
+
+## 6.3 推荐的第一批 Skill Catalog
+
+### A. Literature Skills
+
+- `search_literature`
+- `dedupe_and_rank_sources`
+- `parse_paper_bundle`
+- `extract_paper_notes`
+- `build_related_work_matrix`
+- `map_research_gaps`
+
+### B. Experiment Skills
+
+- `design_experiment`
+- `validate_experiment_spec`
+- `generate_research_code`
+- `patch_existing_codebase`
+- `prepare_run_bundle`
+- `submit_experiment_run`
+- `ingest_experiment_results`
+
+### C. Analysis Skills
+
+- `normalize_metrics`
+- `compare_against_baselines`
+- `summarize_tables_and_figures`
+- `analyze_hypothesis_support`
+- `detect_result_anomalies`
+
+### D. Writing Skills
+
+- `write_stage1_draft`
+- `write_stage2_draft`
+- `assemble_manuscript`
+- `rewrite_abstract`
+- `polish_paper`
+
+### E. Critique Skills
+
+- `critique_related_work`
+- `critique_experiment_spec`
+- `critique_results_and_claims`
+- `audit_claim_evidence_alignment`
+- `decide_revision_or_block`
+
+---
+
+## 7. Agent 与 Skill 的关系
+
+## 7.1 一个 agent 调一组 skills，而不是自带一套算法
+
+推荐关系如下：
+
+| Agent | Skill 组合 |
+|---|---|
+| `Conductor` | `topic_intake`, `scope_budgeting`, `phase_planning`, `route_next_step` |
+| `Researcher` | `search_literature`, `parse_paper_bundle`, `extract_paper_notes`, `build_related_work_matrix`, `map_research_gaps` |
+| `Experimenter` | `design_experiment`, `validate_experiment_spec`, `generate_research_code`, `prepare_run_bundle`, `submit_experiment_run` |
+| `Analyst` | `ingest_experiment_results`, `normalize_metrics`, `compare_against_baselines`, `analyze_hypothesis_support` |
+| `Writer` | `write_stage1_draft`, `write_stage2_draft`, `assemble_manuscript`, `rewrite_abstract`, `polish_paper` |
+| `Critic` | `critique_related_work`, `critique_experiment_spec`, `critique_results_and_claims`, `audit_claim_evidence_alignment`, `decide_revision_or_block` |
+
+## 7.2 同一个 Skill 可被多个 Agent 复用
+
+例如：
+
+- `audit_claim_evidence_alignment` 可被 `Critic` 调用，也可被 `Writer` 在 final pass 前调用
+- `normalize_metrics` 可被 `Analyst` 调用，也可被 `Experimenter` 在结果预处理时调用
+
+这正是 skill 架构比 node 架构更稳定的原因。
+
+---
+
+## 8. Artifact 才是多 Agent 协作的真正接口
+
+如果多 agent 直接共享一个巨大扁平 state，系统会很快失控。
+
+所以 agent 之间不应该主要通过“读取全局 state 字段”协作，而应该主要通过 artifact 协作。
+
+## 8.1 推荐核心 Artifacts
+
+面向 Research OS，推荐最小核心 artifact 集如下：
+
+1. `TopicBrief`
+2. `SearchPlan`
+3. `CorpusSnapshot`
+4. `PaperNote[]`
+5. `RelatedWorkMatrix`
+6. `GapMap`
+7. `HypothesisSet`
+8. `ExperimentSpec`
+9. `CodeChangeSet`
+10. `RunBundle`
+11. `ExperimentResultBundle`
+12. `ResultAnalysis`
+13. `ManuscriptDraft`
+14. `CritiqueReport`
+
+## 8.2 Artifact 设计原则
+
+每个 artifact 至少应具备：
+
+- `artifact_type`
+- `artifact_id`
+- `producer`
+- `source_inputs`
+- `payload`
+- `validation_status`
+- `timestamp`
+
+这样做的意义是：
+
+1. agent 协作边界清晰
+2. easier resume / checkpoint
+3. easier HITL
+4. easier audit
+5. easier skill testing
+
+---
+
+## 9. Research OS 的主流程
+
+## 9.0 3-Agent MVP 主流程
+
+```text
+topic intake
+  -> Conductor.plan
+  -> Researcher.search_literature
+  -> Researcher.parse_paper_bundle
+  -> Researcher.extract_paper_notes
+  -> Researcher.build_related_work_matrix
+  -> Critic.critique_related_work
+      -> revise or pass
+  -> output literature review package
+```
+
+产出：
 
 - `TopicBrief`
-- 检索结果
-- 论文全文 / 摘要 / figure / metadata
-
-输出：
-
+- `SearchPlan`
 - `CorpusSnapshot`
 - `PaperNote[]`
 - `RelatedWorkMatrix`
 - `GapMap`
-- `IdeaCandidates`
-
-说明：
-
-这个 agent 实际上吸收了原本过细的：
-
-- retrieval strategist
-- corpus curator
-- reader
-- related work synthesizer
-- gap analyst
-- idea generator
-
-这些职责，但对外仍表现为一个统一的研究 agent。
-
-## 6.3 Experimenter
-
-职责：
-
-- 把 idea 转成 `ExperimentSpec`
-- 定义 baseline、指标、数据集、ablation
-- 将实验提交给受控执行层
-- 收集和整理实验结果
-
-输入：
-
-- `IdeaCandidates`
-- `GapMap`
-- 可用资源配置
-
-输出：
-
-- `ExperimentSpec`
-- `ExecutionPlan`
-- `ExperimentResultBundle`
-
-说明：
-
-`Experimenter` 可以在资源配置完整时自动跑实验，也可以只生成实验方案，等待人工执行。
-
-## 6.4 Writer
-
-职责：
-
-- 负责阶段一文稿生成
-- 负责阶段二结果写作
-- 负责最终整稿
-- 负责学术化表达和章节拼装
-
-输入：
-
-- 阶段一：`RelatedWorkMatrix`、`GapMap`、`ExperimentSpec`
-- 阶段二：`ExperimentResultBundle`
-
-输出：
-
-- `Stage1Draft`
-- `Stage2Draft`
-- `FinalDraft`
-
-说明：
-
-`Writer` 负责写，不负责判定自己写得对不对。
-
-## 6.5 Critic
-
-职责：
-
-- 专门挑错
-- 不负责正向生成
-- 在阶段一后和阶段二后分别做对抗式审查
-
-输入：
-
-- 当前 draft
-- supporting artifacts
-- reviewer / validator 结果
-
-输出：
-
 - `CritiqueReport`
-- `RevisionDecision`
 
-说明：
+## 9.1 阶段 A：文献与问题形成
 
-这是 v2 Lite 的关键 agent。  
-你提出的“多个大模型进行辩论审查，也就是挑错”，在系统架构里就收敛到这个 agent。
+```text
+topic intake
+  -> Conductor.plan
+  -> Researcher.search_literature
+  -> Researcher.parse_paper_bundle
+  -> Researcher.build_related_work_matrix
+  -> Researcher.map_gaps
+  -> Researcher.propose_hypotheses
+  -> Critic.critique_stageA
+      -> revise or pass
+```
 
-它可以内部调用多个模型角色，但对外只表现为一个 `Critic`。
+产出：
 
----
-
-## 7. 挑错 / 辩论审查机制
-
-## 7.1 为什么必须有挑错环节
-
-如果系统只有“生成”，没有“反驳”，就会出现典型问题：
-
-1. related work 看起来完整，实际漏关键工作
-2. gap 看起来合理，实际只是换个说法
-3. experiment plan 看起来专业，实际无法验证 hypothesis
-4. results 看起来漂亮，实际讨论过度外推
-5. final paper 看起来像论文，实际有大量 reviewer 会抓住的问题
-
-因此 v2 Lite 要明确加入两个强制 gate。
-
-## 7.2 Stage 1 Critique Gate
-
-发生时机：
-
-- 阶段一草稿完成后
-- 阶段二开始前
-
-检查对象：
-
+- `TopicBrief`
+- `CorpusSnapshot`
 - `RelatedWorkMatrix`
 - `GapMap`
-- `IdeaCandidates`
+- `HypothesisSet`
+
+## 9.2 阶段 B：实验设计与代码生成
+
+```text
+HypothesisSet
+  -> Experimenter.design_experiment
+  -> Experimenter.generate_research_code
+  -> Critic.critique_experiment_spec
+      -> revise or pass
+```
+
+产出：
+
 - `ExperimentSpec`
-- `Stage1Draft`
+- `CodeChangeSet`
+- `RunBundle`
 
-重点问题：
+## 9.3 阶段 C：实验执行
 
-1. 是否漏关键相关工作
-2. gap 是否真实存在
-3. idea 是否只是已有方法换皮
-4. hypothesis 是否可检验
-5. experiment design 是否能真正回答研究问题
-6. draft 中是否把“猜测”写成“事实”
+```text
+RunBundle
+  -> Experimenter.submit_experiment_run
+  -> runner(local / ssh)
+  -> ingest_experiment_results
+```
 
-输出：
-
-- `Stage1CritiqueReport`
-
-可能动作：
-
-- `pass`
-- `revise_then_continue`
-- `block`
-
-## 7.3 Stage 2 Critique Gate
-
-发生时机：
-
-- 阶段二草稿完成后
-- 最终润色前
-
-检查对象：
+产出：
 
 - `ExperimentResultBundle`
-- `Results`
-- `Discussion`
-- `Conclusion`
-- `FinalDraft`
 
-重点问题：
+## 9.4 阶段 D：结果分析与写作
 
-1. 结果文字是否与真实实验一致
-2. Discussion 是否过度外推
-3. Conclusion 是否超出证据
-4. 引用和 claim 是否一致
-5. 是否有 reviewer 一眼会抓住的漏洞
+```text
+ExperimentResultBundle
+  -> Analyst.normalize_metrics
+  -> Analyst.analyze_hypothesis_support
+  -> Writer.write_stage2_draft
+  -> Writer.assemble_manuscript
+  -> Critic.critique_final_draft
+      -> revise or pass
+```
 
-输出：
+产出：
 
-- `Stage2CritiqueReport`
-
-可能动作：
-
-- `pass`
-- `revise_then_continue`
-- `block`
-
-## 7.4 多模型辩论如何落地
-
-不建议做开放式、无限轮次的“模型群聊辩论”。
-
-更稳的做法是把它做成一个受控流程：
-
-1. `Writer / Researcher / Experimenter` 先产出 draft
-2. `Critic-A` 站在“苛刻 reviewer”角度找错
-3. `Critic-B` 站在“反方评审 / rebuttal 审稿人”角度找错
-4. `Judge` 汇总两个 critique，给出统一 verdict
-
-这里的 `Judge` 不必作为独立 agent 对外暴露。
-
-实现上可以作为 `Critic` 内部的一个模式：
-
-- mode A: novelty / completeness critic
-- mode B: empirical / logic critic
-- mode C: judge
-
-因此系统层面仍然只有 5 个 agent。
+- `ResultAnalysis`
+- `ManuscriptDraft`
+- `FinalPaper`
 
 ---
 
-## 8. 受控实验执行层
+## 10. 当前仓库如何映射到新架构
 
-## 8.1 设计原则
+## 10.1 可以直接保留的层
 
-实验执行不能直接建立在“让 agent 拿远程 shell”上。
+这些层不应推倒：
 
-必须满足：
-
-1. 可审计
-2. 可限制资源
-3. 可恢复
-4. 可记录 artifact
-5. 可人工介入
-
-因此实验执行层要独立于认知层。
-
-## 8.2 v2 Lite 范围
-
-v2 Lite 不做全量 runner 矩阵。
-
-只做两种：
-
-1. `local_runner`
-2. `ssh_runner`
+- `plugins/`
+- `providers/`
+- `executors/`
+- `infra/`
+- `ingest/`
+- `rag/`
+- tracing / events / run outputs
 
 原因：
 
-- `local_runner` 方便开发和小实验
-- `ssh_runner` 足以覆盖“配置服务器和显卡资源后由 agent 自动跑实验”的主要诉求
+它们本质上是 Skill Runtime 的底座，而不是旧 graph 的包袱。
 
-先不做：
+## 10.2 应该被提升为 Skill 的现有模块
 
-- `slurm_runner`
-- `k8s_runner`
-- `ray_runner`
+### 当前 `stages/` 更适合演进为 skill implementation
 
-这些可以作为后续扩展。
+可映射为：
 
-## 8.3 Resource Profile
+- [planning.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/stages/planning.py) -> `query_plan` / `phase_plan`
+- [retrieval.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/stages/retrieval.py) -> `search_literature`
+- [indexing.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/stages/indexing.py) -> `parse_paper_bundle`
+- [analysis.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/stages/analysis.py) -> `extract_paper_notes`
+- [synthesis.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/stages/synthesis.py) -> `build_related_work_matrix` / `map_gaps`
+- [experiments.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/stages/experiments.py) -> `design_experiment` / `ingest_experiment_results`
+- [reporting.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/stages/reporting.py) -> `write_manuscript_section`
 
-UI 中要支持配置服务器与计算资源，但先只支持最小必要字段。
+### 当前 `reviewers/` 更适合演进为 critique skills
 
-建议结构：
+可映射为：
 
-```yaml
-resource_profile:
-  profile_id: gpu-server-01
-  runner_type: ssh_runner
-  host: 10.0.0.8
-  port: 22
-  username: research
-  auth_mode: key
-  gpu_count: 1
-  gpu_type: RTX4090
-  cpu_cores: 16
-  ram_gb: 64
-  workspace_root: /data/researchagent_runs
-  max_wall_time_hours: 12
-  max_parallel_jobs: 1
-```
+- [retrieval_reviewer.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/reviewers/retrieval_reviewer.py) -> `critique_related_work`
+- [experiment_reviewer.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/reviewers/experiment_reviewer.py) -> `critique_experiment_spec`
+- [post_report_review.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/reviewers/post_report_review.py) -> `critique_results_and_claims`
 
-## 8.4 ExperimentSpec
+## 10.3 当前最需要被弱化的层
 
-`Experimenter` 输出的实验描述必须结构化。
-
-最低建议字段：
-
-```yaml
-experiment_spec:
-  experiment_id: exp-001
-  hypothesis_id: hyp-001
-  task_type: classification
-  objective: validate robustness improvement
-  codebase:
-    repo: git@github.com:org/project.git
-    commit: abc123
-    entrypoint: train.py
-  datasets:
-    - dataset_a:v1
-  baselines:
-    - erm
-    - method_x
-  metrics:
-    - accuracy
-    - macro_f1
-  ablations:
-    - remove_module_a
-  resources:
-    profile_id: gpu-server-01
-    gpus: 1
-    max_hours: 12
-  expected_artifacts:
-    - metrics.json
-    - config.yaml
-    - train.log
-```
-
-## 8.5 HITL 控制
-
-以下动作建议必须人工确认：
-
-1. 首次提交远程训练任务
-2. 使用高成本 GPU profile
-3. 覆盖已有结果
-4. 扩增实验规模
-
-也就是说，系统可以自动做实验，但不是“无限制自动化”。
-
----
-
-## 9. 核心 Artifact 设计
-
-v2 Lite 不做重型 artifact registry，但必须有清晰工件。
-
-先保留 6 个核心 artifact：
-
-1. `TopicBrief`
-2. `RelatedWorkMatrix`
-3. `GapMap`
-4. `ExperimentSpec`
-5. `ExperimentResultBundle`
-6. `ManuscriptDraft`
-
-## 9.1 TopicBrief
-
-字段建议：
-
-- topic
-- task_type
-- scope
-- target_style
-- language
-- constraints
-
-## 9.2 RelatedWorkMatrix
-
-字段建议：
-
-- paper_id
-- title
-- year
-- task
-- method family
-- dataset
-- metrics
-- main contribution
-- limitations
-- relevance
-
-## 9.3 GapMap
-
-字段建议：
-
-- gap_id
-- gap_type
-- description
-- evidence
-- affected papers
-- confidence
-
-## 9.4 ExperimentSpec
-
-字段见上一节。
-
-## 9.5 ExperimentResultBundle
-
-字段建议：
-
-- run_id
-- experiment_id
-- metrics
-- artifacts
-- logs
-- best_run
-- failed_runs
-- notes
-
-## 9.6 ManuscriptDraft
-
-字段建议：
-
-- phase
-- sections
-- claims
-- references
-- linked_artifacts
-
----
-
-## 10. 对当前代码库的映射
-
-v2 Lite 必须建立在现有实现之上，而不是推翻重做。
-
-## 10.1 当前可复用模块
-
-直接复用：
+当前最需要弱化的是：
 
 - [graph.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/graph.py)
-- [stages](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/stages)
-- [reviewers](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/reviewers)
-- [trace_logger.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/tracing/trace_logger.py)
-- [trace_grader.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/tracing/trace_grader.py)
 - [schemas.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/core/schemas.py)
 
-## 10.2 现有模块如何对应到 5 agent
+原因：
 
-### Planner
+1. `graph.py` 仍然是系统主抽象
+2. `ResearchState` 仍然是大而全的协作载体
+3. 这两者都会限制 skill 化和多 agent 化
 
-可落在：
+未来它们应变成：
 
-- [planning.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/stages/planning.py)
-- [query_planning.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/core/query_planning.py)
+- `graph` -> thin runtime workflow
+- `ResearchState` -> run context + artifact registry view
 
-### Researcher
+## 10.4 graph.py 的具体过渡策略
 
-可落在：
+当前 `graph.py` 包含 12 个 LangGraph 节点和复杂路由逻辑（retry、degrade、HITL pause）。不能一次替换，必须分三步过渡：
 
-- [retrieval.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/stages/retrieval.py)
-- [analysis.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/stages/analysis.py)
-- [synthesis.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/stages/synthesis.py)
+### Step 1：graph 节点内部调用 skill（而非直接调用 stage）
 
-### Experimenter
-
-可落在：
-
-- [experiments.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/stages/experiments.py)
-- 后续新增 `execution/*`
-
-### Writer
-
-可落在：
-
-- [reporting.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/stages/reporting.py)
-
-### Critic
-
-可组合现有：
-
-- [retrieval_reviewer.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/reviewers/retrieval_reviewer.py)
-- [experiment_reviewer.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/reviewers/experiment_reviewer.py)
-- [post_report_review.py](/c:/Users/ziang/Desktop/ResearchAgent/src/agent/reviewers/post_report_review.py)
-
-再新增：
-
-- `src/agent/reviewers/stage1_critic.py`
-- `src/agent/reviewers/stage2_critic.py`
-
----
-
-## 11. 建议流程图
-
-## 11.1 阶段一
+当前：
 
 ```text
-topic_intake
-  -> plan_research
-  -> fetch_sources
-  -> index_sources
-  -> analyze_sources
-  -> review_retrieval
-  -> synthesize_related_work
-  -> analyze_gaps
-  -> generate_ideas
-  -> design_experiment
-  -> stage1_critic_gate
-      -> revise stage1 artifacts
-      -> or approve stage1 draft
+graph node "fetch_sources" → 直接调用 retrieval.py 的 run_retrieval()
 ```
 
-## 11.2 阶段二
+目标：
 
 ```text
-ingest_experiment_results
-  -> validate_results
-  -> analyze_results
-  -> write_results_discussion
-  -> write_conclusion
-  -> rewrite_abstract
-  -> stage2_critic_gate
-      -> revise manuscript
-      -> or approve final draft
-  -> final_polish
+graph node "fetch_sources" → 调用 skill_registry.invoke("search_literature", artifacts)
+```
+
+在这一步，graph 拓扑不变，但节点实现从"直接调 stage 函数"改为"通过 skill 调用"。这样 skill 的输入输出契约可以先固化，而 graph 的路由逻辑不受影响。
+
+### Step 2：新 runtime orchestrator 替代 graph 的角色调度
+
+当前 graph 的路由逻辑（如 `review_retrieval → retry/degrade/continue`）移入 `runtime/orchestrator.py`，由 Conductor role 驱动。
+
+关键决策：新 runtime 仍然使用 LangGraph 作为底层执行引擎和 checkpoint 机制，但 graph 的拓扑由 orchestrator 动态生成，而不再是一个静态的硬编码 graph。
+
+```text
+当前：graph.py 静态定义 12 节点 + 所有边
+目标：orchestrator 按 role policy 动态决定下一个 skill 调用
+底层：仍用 LangGraph StateGraph 做 checkpoint/resume，但拓扑是 orchestrator 生成的
+```
+
+### Step 3：旧 graph 入口降级为兼容模式
+
+迁移完成前，CLI 保留两条入口：
+
+- `--mode=legacy`：走现有 graph.py（默认，直到 MVP 验证通过）
+- `--mode=os`：走新 runtime orchestrator
+
+MVP 验证通过后，默认切换到 `--mode=os`，`--mode=legacy` 保留一个版本周期后移除。
+
+## 10.5 ResearchState 的分阶段瘦身策略
+
+当前 `ResearchState` 包含 ~30 个字段，分布在 5 个 namespace 中。不能一次拆掉，需要区分两类字段：
+
+### 产出类字段（应迁移到 artifact）
+
+这些是 stage 的核心产出，应当由 artifact 承载：
+
+| 当前 state 字段 | 目标 artifact |
+|---|---|
+| `research.papers[]` | `CorpusSnapshot.papers` |
+| `research.web_sources[]` | `CorpusSnapshot.web_sources` |
+| `research.analyses[]` | `PaperNote[]` |
+| `research.synthesis` | `RelatedWorkMatrix.narrative` |
+| `evidence.claim_evidence_map[]` | `RelatedWorkMatrix.claims` |
+| `evidence.gaps[]` | `GapMap.gaps` |
+| `planning.research_questions[]` | `SearchPlan.research_questions` |
+| `planning.search_queries[]` | `SearchPlan.queries` |
+| `report.report` | `ManuscriptDraft.content` |
+| `review.retrieval_review` | `CritiqueReport` |
+| `research.experiment_plan` | `ExperimentSpec` |
+
+### 控制类字段（保留在 runtime context）
+
+这些是运行时控制信号，不适合做成 artifact：
+
+- `iteration` / `max_iterations` / `should_continue`
+- `_retrieval_review_retries` / `_experiment_review_retries`
+- `await_experiment_results`
+- `status` / `error` / `run_id`
+- `_cfg`
+
+### 过渡期双写策略
+
+Phase 1 期间，stage 同时写入 state 字段和 artifact。后续节点优先消费 artifact，找不到时 fallback 到 state。具体做法：
+
+```python
+# stage 输出时
+result = run_retrieval(...)
+artifact = CorpusSnapshot(papers=result["papers"], web_sources=result["web_sources"])
+artifact_registry.save(artifact)
+return {**result, "_artifacts": [artifact.artifact_id]}  # 双写
+```
+
+Phase 3 之后，新 runtime 只消费 artifact，不再读 state 产出类字段。state 中的产出类字段变为只写（仅为 legacy 兼容保留）。
+
+## 10.6 当前 Provider 层与目标接口的差距分析
+
+当前仓库已有的抽象（`core/interfaces.py`）：
+
+```python
+class LLMBackend(Protocol):
+    def generate(*, system_prompt, user_prompt, model, temperature, cfg) -> str
+```
+
+目标接口要求四个方法：`generate`、`stream`、`tool_call`、`structured_output`。
+
+差距分析：
+
+| 能力 | 当前状态 | 差距 |
+|---|---|---|
+| `generate` | 已有，可用 | 无 |
+| `stream` | 未抽象，Gemini 底层支持但未暴露 | 第一版可不做 |
+| `tool_call` | 未抽象，Gemini/OpenAI 格式不同 | 第一版可不做，当前 stage 不依赖 tool calling |
+| `structured_output` | 未抽象，JSON 解析散落在各 stage 的 `_parse_json_safe` 中 | **应在第一版统一** |
+
+推荐第一版 provider 接口：
+
+```python
+class LLMProvider(Protocol):
+    def generate(self, request: ModelRequest) -> ModelResponse: ...
+    def generate_structured(self, request: ModelRequest, schema: type[T]) -> T: ...
+```
+
+`stream` 和 `tool_call` 留到 Phase 5（实验执行闭环需要时再加）。
+
+当前两个 backend 的适配成本：
+
+- `OpenAIChatBackend`（`plugins/llm/openai_chat.py`）：包装 `infra/llm/openai_chat_client.py`，改动量小
+- `GeminiChatBackend`（`plugins/llm/gemini_chat.py`）：包装 `infra/llm/gemini_chat_client.py`，改动量小
+
+两者都只需要在现有 `generate()` 基础上加一层 `generate_structured()` 即可。不需要重写。
+
+---
+
+## 11. 最终推荐架构
+
+## 11.1 推荐的系统表达
+
+不再把系统定义为：
+
+`一个自动研究 Agent`
+
+而定义为：
+
+`一个由 frontier model 驱动、由 skills 提供能力、由多 agent 提供角色分工、由 runtime 提供控制平面的 Research Operating System。`
+
+## 11.2 推荐的正式架构表述
+
+```text
+Frontier Model Kernel
+    + Research Skill Runtime
+    + 6 Role Agents
+    + Artifact-Centric Workflow
+    + Controlled Experiment Execution Layer
+    = Research Operating System
 ```
 
 ---
 
-## 12. Critic 的统一契约
+## 12. 明确不做什么
 
-所有 Critic 输出必须统一结构：
+为了避免新一轮膨胀，本阶段明确不做：
 
-```json
-{
-  "critic_name": "stage1_critic",
-  "status": "warn",
-  "action": "revise_then_continue",
-  "issues": [
-    "missing key baseline paper",
-    "experiment does not test main hypothesis"
-  ],
-  "suggested_fixes": [
-    "add 2 recent benchmark papers",
-    "introduce ablation for module A"
-  ],
-  "severity": "medium",
-  "confidence": 0.87
-}
-```
-
-允许动作：
-
-- `pass`
-- `revise_then_continue`
-- `block`
-
-说明：
-
-这里不再沿用过细的 reviewer 动作集合，而是收口为更容易执行的 3 类。
+1. 不做十几个 specialist agent
+2. 不做自由群聊式 agent debate
+3. 不做全量 runner 矩阵
+4. 不把 skills 设计成零散提示词集合
+5. 不继续围绕厚 graph 增量缝补
 
 ---
 
-## 13. UI 影响
+## 13. 结论
 
-v2 Lite 的 UI 不必一次做成完整研究工作台，但至少要支持：
+ResearchAgent 的正确升级方向，不是：
 
-## 13.1 Run 页
+- 在当前 graph 上继续叠功能
+- 先做复杂多 agent，再想怎么复用能力
 
-- topic
-- phase
-- run / resume
-- 当前阶段状态
+而是：
 
-## 13.2 Models 页
+1. 先把系统重定义为 `Research OS`
+2. 先把能力抽象成 `skills`
+3. 再让 `multi-agent` 成为 skills 的角色化调度层
+4. 再由可切换的 `frontier reasoning model` 作为统一认知内核驱动整个系统
 
-- planner/researcher/writer/critic 的模型配置
-- API 凭证状态
+一句话总结：
 
-## 13.3 Resources 页
-
-- `local_runner`
-- `ssh_runner`
-- GPU profile
-- 提交策略
-
-## 13.4 Artifacts 页
-
-- `RelatedWorkMatrix`
-- `GapMap`
-- `ExperimentSpec`
-- `ExperimentResultBundle`
-- draft 预览
-
-## 13.5 Critique 页
-
-- Stage 1 Critique
-- Stage 2 Critique
-- 每个 issue 的修复建议
-- 人工批准 / 继续修订
-
----
-
-## 14. 推荐实施顺序
-
-## Milestone 1: 两阶段流程固化
-
-目标：
-
-- 明确 `stage1` / `stage2`
-- 把当前报告链路拆成两段
-
-验收：
-
-- 可以在没有实验结果时只产出 `Stage1Draft`
-- 有实验结果时再补 `Stage2Draft`
-
-## Milestone 2: 6 个核心 artifact
-
-目标：
-
-- 在现有 state 里落入 6 个核心 artifact
-
-验收：
-
-- 每次 run 都能导出结构化 artifact JSON
-
-## Milestone 3: 5 个 agent 收口
-
-目标：
-
-- 把现有 stages/reviewers 重新组织成 5-agent 模式
-
-验收：
-
-- 对外的系统角色只有 `Planner / Researcher / Experimenter / Writer / Critic`
-
-## Milestone 4: Stage 1 Critique Gate
-
-目标：
-
-- 阶段一完成后强制挑错
-
-验收：
-
-- 没有通过 critique 时不能进入下一阶段
-
-## Milestone 5: SSH 实验执行
-
-目标：
-
-- 新增 `ssh_runner`
-- 支持提交受控实验
-
-验收：
-
-- 可从 UI 或 CLI 提交一个远程实验并回写结果
-
-## Milestone 6: Stage 2 Critique Gate
-
-目标：
-
-- 在最终成稿前做第二次挑错
-
-验收：
-
-- final draft 必须经过结果一致性和论文级 red-team 审查
-
----
-
-## 15. 明确不做什么
-
-为了避免 v2 Lite 再次膨胀，本阶段明确不做：
-
-1. 不做超过 5 个公开角色 agent
-2. 不做群聊式自由辩论系统
-3. 不做全量分布式 runner 矩阵
-4. 不做过重的 artifact 平台化基础设施
-5. 不做 OpenClaw 深度绑定主流程
-
-这些都可以在 v3 再考虑。
-
----
-
-## 16. 结论
-
-`ResearchAgent v2 Lite` 的最优路线不是“更多 agent”，而是“更强闭环”。
-
-推荐最终收口为：
-
-- `5` 个核心 agent
-- `2` 个论文生成阶段
-- `2` 次强制 critique / debate review gate
-- `1` 个受控实验执行层
-
-一句话版本：
-
-`Planner 定方向，Researcher 找证据，Experimenter 产与跑实验，Writer 负责成稿，Critic 专门挑错。`
-
-这套结构已经足够支持你想要的目标：
-
-- 先形成综述和 related work
-- 再提出 idea 和实验方案
-- 配好服务器和 GPU 后由系统自动执行实验
-- 回写结果后完成后半篇论文
-- 在成稿前经过多模型挑错审查
-
-这比十几个 agent 的方案更克制，也更适合当前代码库继续演进。
+`Research OS = Frontier Agent Kernel + Skills + Role-Based Multi-Agent + Artifact-Centric Runtime`
