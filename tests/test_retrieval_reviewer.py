@@ -14,6 +14,7 @@ def _make_state(
     research_questions=None,
     search_queries=None,
     cfg=None,
+    retrieval_retries=0,
 ):
     return {
         "topic": "concept drift detection",
@@ -60,7 +61,7 @@ def _make_state(
         "max_iterations": 3,
         "should_continue": False,
         "_cfg": cfg or {},
-        "_retrieval_review_retries": 0,
+        "_retrieval_review_retries": retrieval_retries,
     }
 
 
@@ -156,6 +157,44 @@ class TestRetrievalReviewerFail(unittest.TestCase):
         # Should have supplemental queries in state update
         if "search_queries" in result:
             self.assertGreater(len(result["search_queries"]), 1)
+
+    def test_retry_budget_exhausted_degrades_when_sources_exist(self):
+        papers = [_paper("arxiv:1", "Concept drift paper", 2024, venue="NeurIPS")]
+        analyses = [_analysis("arxiv:1", "Concept drift analysis", venue="NeurIPS")]
+        state = _make_state(
+            papers=papers,
+            analyses=analyses,
+            research_questions=[
+                "How does concept drift affect models?",
+                "What are the best drift detectors?",
+            ],
+            search_queries=["concept drift"],
+            cfg={"reviewer": {"retrieval": {"max_retries": 1}}},
+            retrieval_retries=1,
+        )
+        result = review_retrieval(state)
+        review = result.get("review", {}).get("retrieval_review", {})
+        self.assertEqual(review["verdict"]["action"], "degrade")
+        self.assertEqual(review["verdict"]["status"], "warn")
+        self.assertEqual(result["_retrieval_review_retries"], 0)
+
+    def test_retry_budget_exhausted_blocks_when_no_sources_exist(self):
+        state = _make_state(
+            papers=[],
+            analyses=[],
+            research_questions=[
+                "How does concept drift affect models?",
+                "What are the best drift detectors?",
+            ],
+            search_queries=["concept drift"],
+            cfg={"reviewer": {"retrieval": {"max_retries": 1}}},
+            retrieval_retries=1,
+        )
+        result = review_retrieval(state)
+        review = result.get("review", {}).get("retrieval_review", {})
+        self.assertEqual(review["verdict"]["action"], "block")
+        self.assertEqual(review["verdict"]["status"], "fail")
+        self.assertEqual(result["_retrieval_review_retries"], 0)
 
 
 class TestRQCoverage(unittest.TestCase):

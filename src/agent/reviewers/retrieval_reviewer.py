@@ -149,6 +149,8 @@ def review_retrieval(state: ResearchState) -> Dict[str, Any]:
     )
     max_background_ratio = float(reviewer_cfg.get("max_background_ratio", _DEFAULT_MAX_BACKGROUND_RATIO))
     max_reject_ratio = float(reviewer_cfg.get("max_reject_ratio", _DEFAULT_MAX_REJECT_RATIO))
+    max_retries = int(reviewer_cfg.get("max_retries", 1))
+    current_retries = int(state.get("_retrieval_review_retries", 0) or 0)
 
     import datetime
     current_year = datetime.datetime.now().year
@@ -305,6 +307,22 @@ def review_retrieval(state: ResearchState) -> Dict[str, Any]:
         action = "continue"
         confidence = 0.8
 
+    if action == "retry_upstream" and current_retries >= max_retries:
+        has_usable_sources = bool(analyses or papers or web_sources)
+        if has_usable_sources:
+            status = "warn"
+            action = "degrade"
+            suggested_fixes.append(
+                "Retrieval retry budget exhausted; continue with current sources and flag coverage gaps in the report"
+            )
+        else:
+            status = "fail"
+            action = "block"
+            suggested_fixes.append(
+                "Retrieval retry budget exhausted with no usable sources; stop and broaden retrieval configuration"
+            )
+
+    suggested_fixes = list(dict.fromkeys(suggested_fixes))
     verdict = ReviewerVerdict(
         reviewer="retrieval_reviewer",
         status=status,
@@ -354,7 +372,6 @@ def review_retrieval(state: ResearchState) -> Dict[str, Any]:
             len(suggested_queries),
         )
 
-    retries = state.get("_retrieval_review_retries", 0)
-    update["_retrieval_review_retries"] = retries + 1
+    update["_retrieval_review_retries"] = current_retries + 1 if action == "retry_upstream" else 0
 
     return to_namespaced_update(update)

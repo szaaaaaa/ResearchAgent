@@ -64,7 +64,9 @@ def _route_after_review_experiment(state: ResearchState) -> str:
     max_retries = int(state.get("_cfg", {}).get("reviewer", {}).get("experiment", {}).get("max_retries", 1))
 
     if action == "retry_upstream":
-        if review_retries < max_retries:
+        # review_experiment increments the counter before routing, so the
+        # first retry attempt arrives here as 1 when max_retries is 1.
+        if review_retries <= max_retries:
             logger.info(
                 "[ExperimentReviewer] Routing back to recommend_experiments for revision (%d/%d)",
                 review_retries,
@@ -94,17 +96,31 @@ def _route_after_retrieval_review(state: ResearchState) -> str:
     verdict = retrieval_review.get("verdict", {})
     action = verdict.get("action", "continue")
 
-    # Only retry if action says so AND we haven't already retried too many times
-    retrieval_retries = state.get("_retrieval_review_retries", 0)
-    max_retries = state.get("_cfg", {}).get("reviewer", {}).get("retrieval", {}).get("max_retries", 1)
+    retrieval_retries = int(state.get("_retrieval_review_retries", 0) or 0)
+    max_retries = int(state.get("_cfg", {}).get("reviewer", {}).get("retrieval", {}).get("max_retries", 1))
 
-    if action == "retry_upstream" and retrieval_retries < max_retries:
-        logger.info("[RetrievalReviewer] Routing to fetch_sources for supplemental retrieval (retry %d/%d)",
-                     retrieval_retries + 1, max_retries)
-        return "fetch_sources"
+    if action == "retry_upstream":
+        if retrieval_retries <= max_retries:
+            logger.info(
+                "[RetrievalReviewer] Routing to fetch_sources for supplemental retrieval (retry %d/%d)",
+                retrieval_retries,
+                max_retries,
+            )
+            return "fetch_sources"
+        logger.warning(
+            "[RetrievalReviewer] Received retry_upstream after retry budget exhausted (%d/%d); blocking workflow",
+            retrieval_retries,
+            max_retries,
+        )
+        return "block"
+
+    if action == "degrade":
+        logger.warning("[RetrievalReviewer] Proceeding with degraded retrieval quality")
+        return "synthesize"
 
     if action == "block":
-        logger.warning("[RetrievalReviewer] Retrieval quality blocked — proceeding with degraded sources")
+        logger.warning("[RetrievalReviewer] Blocking workflow per reviewer verdict")
+        return "block"
 
     return "synthesize"
 
@@ -154,6 +170,7 @@ def build_graph(*, checkpointer: Any | None = None) -> StateGraph:
         {
             "fetch_sources": "fetch_sources",
             "synthesize": "synthesize",
+            "block": END,
         },
     )
 

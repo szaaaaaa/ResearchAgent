@@ -6,7 +6,7 @@ import unittest
 from src.agent.reviewers.experiment_reviewer import review_experiment
 
 
-def _make_state(*, experiment_plan=None):
+def _make_state(*, experiment_plan=None, cfg=None, experiment_retries=0):
     return {
         "topic": "concept drift",
         "planning": {"research_questions": [], "search_queries": [], "scope": {},
@@ -21,7 +21,8 @@ def _make_state(*, experiment_plan=None):
                     "experiment_review": {}, "claim_verdicts": [], "reviewer_log": []},
         "report": {"report": "", "report_critic": {}, "repair_attempted": False,
                     "acceptance_metrics": {}},
-        "_cfg": {},
+        "_cfg": cfg or {},
+        "_experiment_review_retries": experiment_retries,
     }
 
 
@@ -157,6 +158,29 @@ class TestExperimentReviewer(unittest.TestCase):
         self.assertEqual(review["verdict"]["action"], "retry_upstream")
         self.assertIn(review["verdict"]["status"], ("warn", "fail"))
         self.assertGreater(len(review["strategy_issues"]), 0)
+
+    def test_retry_budget_exhausted_blocks(self):
+        plan = {
+            "rq_experiments": [
+                {
+                    "research_question": "RQ1",
+                    "datasets": [{"name": "Dataset train/test split", "reason": "train/test split"}],
+                    "hyperparameters": {"baseline": {"lr": 0.01}, "search_space": {"lr": [0.001, 0.01]}},
+                    "evaluation": {"metrics": ["accuracy"], "protocol": "holdout"},
+                    "environment": {"gpu": "A100"},
+                }
+            ],
+        }
+        state = _make_state(
+            experiment_plan=plan,
+            cfg={"reviewer": {"experiment": {"max_retries": 1}}},
+            experiment_retries=1,
+        )
+        result = review_experiment(state)
+        review = result.get("review", {}).get("experiment_review", {})
+        self.assertEqual(review["verdict"]["action"], "block")
+        self.assertEqual(review["verdict"]["status"], "fail")
+        self.assertEqual(result["_experiment_review_retries"], 0)
 
 
 if __name__ == "__main__":

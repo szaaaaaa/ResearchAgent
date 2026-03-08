@@ -75,7 +75,7 @@ class GraphRuntimeTest(unittest.TestCase):
         self.assertEqual(
             graph._route_after_review_experiment(
                 {
-                    "_experiment_review_retries": 0,
+                    "_experiment_review_retries": 1,
                     "_cfg": {"reviewer": {"experiment": {"max_retries": 1}}},
                     "review": {"experiment_review": {"verdict": {"action": "retry_upstream"}}},
                 }
@@ -85,9 +85,47 @@ class GraphRuntimeTest(unittest.TestCase):
         self.assertEqual(
             graph._route_after_review_experiment(
                 {
-                    "_experiment_review_retries": 1,
+                    "_experiment_review_retries": 2,
                     "_cfg": {"reviewer": {"experiment": {"max_retries": 1}}},
                     "review": {"experiment_review": {"verdict": {"action": "retry_upstream"}}},
+                }
+            ),
+            "block",
+        )
+
+    def test_route_after_retrieval_review_respects_retry_and_terminal_actions(self) -> None:
+        self.assertEqual(
+            graph._route_after_retrieval_review(
+                {
+                    "_retrieval_review_retries": 1,
+                    "_cfg": {"reviewer": {"retrieval": {"max_retries": 1}}},
+                    "review": {"retrieval_review": {"verdict": {"action": "retry_upstream"}}},
+                }
+            ),
+            "fetch_sources",
+        )
+        self.assertEqual(
+            graph._route_after_retrieval_review(
+                {
+                    "review": {"retrieval_review": {"verdict": {"action": "degrade"}}},
+                }
+            ),
+            "synthesize",
+        )
+        self.assertEqual(
+            graph._route_after_retrieval_review(
+                {
+                    "review": {"retrieval_review": {"verdict": {"action": "block"}}},
+                }
+            ),
+            "block",
+        )
+        self.assertEqual(
+            graph._route_after_retrieval_review(
+                {
+                    "_retrieval_review_retries": 2,
+                    "_cfg": {"reviewer": {"retrieval": {"max_retries": 1}}},
+                    "review": {"retrieval_review": {"verdict": {"action": "retry_upstream"}}},
                 }
             ),
             "block",
@@ -162,6 +200,14 @@ class GraphRuntimeTest(unittest.TestCase):
                 "recommend_experiments": "recommend_experiments",
                 "ingest_experiment_results": "ingest_experiment_results",
                 "evaluate_progress": "evaluate_progress",
+                "block": graph.END,
+            },
+        )
+        self.assertEqual(
+            cond_map["review_retrieval"],
+            {
+                "fetch_sources": "fetch_sources",
+                "synthesize": "synthesize",
                 "block": graph.END,
             },
         )

@@ -139,11 +139,9 @@ def _check_compute(rq_experiments: List[Dict[str, Any]]) -> List[str]:
         baseline = hyper.get("baseline", {}) or {}
         epochs = baseline.get("epochs", 0)
 
-        # Flag very high epoch counts
         if isinstance(epochs, (int, float)) and epochs > 200:
             issues.append(f"[{rq}] Very high epoch count ({epochs}) — check convergence")
 
-        # Flag missing GPU spec for deep learning tasks
         task = str(exp.get("task") or "").lower()
         if any(kw in task for kw in ("train", "fine-tune", "finetune", "deep")) and not gpu:
             issues.append(f"[{rq}] Deep learning task but no GPU specified")
@@ -157,6 +155,9 @@ def review_experiment(state: ResearchState) -> Dict[str, Any]:
     Writes: review.experiment_review, review.reviewer_log (appends)
     """
     experiment_plan: Dict[str, Any] = dict(sget(state, "experiment_plan", {}) or {})
+    reviewer_cfg = state.get("_cfg", {}).get("reviewer", {}).get("experiment", {})
+    current_retries = int(state.get("_experiment_review_retries", 0) or 0)
+    max_retries = int(reviewer_cfg.get("max_retries", 1))
     rq_experiments = experiment_plan.get("rq_experiments", [])
     if not isinstance(rq_experiments, list):
         rq_experiments = []
@@ -189,13 +190,19 @@ def review_experiment(state: ResearchState) -> Dict[str, Any]:
             "status": "Experiment review: no plan to review",
             "_experiment_review_retries": 0,
         })
+
     if not rq_experiments:
+        action = "retry_upstream"
+        if current_retries >= max_retries:
+            action = "block"
         verdict = ReviewerVerdict(
             reviewer="experiment_reviewer",
             status="fail",
-            action="retry_upstream",
+            action=action,
             issues=["Experiment plan is missing rq_experiments"],
-            suggested_fix=["Regenerate the experiment plan with at least one experiment group per research question"],
+            suggested_fix=[
+                "Regenerate the experiment plan with at least one experiment group per research question"
+            ],
             confidence=0.6,
         )
         existing_log = list(sget(state, "reviewer_log", []))
@@ -215,7 +222,7 @@ def review_experiment(state: ResearchState) -> Dict[str, Any]:
                 "reviewer_log": existing_log,
             },
             "status": "Experiment review: fail (missing rq_experiments)",
-            "_experiment_review_retries": int(state.get("_experiment_review_retries", 0)) + 1,
+            "_experiment_review_retries": current_retries + 1 if action == "retry_upstream" else 0,
         })
 
     schema_issues = _validate_experiment_plan(experiment_plan)
@@ -274,6 +281,14 @@ def review_experiment(state: ResearchState) -> Dict[str, Any]:
         suggested_fixes.append("Include cross-dataset validation or out-of-domain generalization checks")
     suggested_fixes = list(dict.fromkeys(suggested_fixes))
 
+    if action == "retry_upstream" and current_retries >= max_retries:
+        action = "block"
+        status = "fail"
+        suggested_fixes.append(
+            "Experiment review retry budget exhausted; stop and revise the experiment plan before resuming"
+        )
+        suggested_fixes = list(dict.fromkeys(suggested_fixes))
+
     verdict = ReviewerVerdict(
         reviewer="experiment_reviewer",
         status=status,
@@ -308,7 +323,5 @@ def review_experiment(state: ResearchState) -> Dict[str, Any]:
             "reviewer_log": existing_log,
         },
         "status": f"Experiment review: {status} ({len(all_issues)} issues)",
-        "_experiment_review_retries": (
-            int(state.get("_experiment_review_retries", 0)) + 1 if action == "retry_upstream" else 0
-        ),
+        "_experiment_review_retries": current_retries + 1 if action == "retry_upstream" else 0,
     })

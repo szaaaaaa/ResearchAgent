@@ -112,6 +112,26 @@ def _set_global_seed(seed: int) -> None:
     np.random.seed(seed)
 
 
+def _resolve_report_text(final_state: dict) -> str:
+    await_experiment_results = bool(final_state.get("await_experiment_results", False))
+    report = sget(final_state, "report", "")
+    if await_experiment_results and not str(report).strip():
+        return (
+            "# Research Run Paused\n\n"
+            "The workflow is waiting for human-submitted experiment results.\n"
+            "Fill `experiment_results` in the saved state file and resume from HITL checkpoint.\n"
+        )
+    if not str(report).strip():
+        status_text = str(final_state.get("status", "") or "Workflow ended before report generation.")
+        return (
+            "# Research Run Incomplete\n\n"
+            f"Status: {status_text}\n\n"
+            "The workflow exited before generating the final report. "
+            "Check `events.log` and `research_state.json` for the terminal stage and reviewer verdicts.\n"
+        )
+    return str(report)
+
+
 def main() -> None:
     args = parse_args()
     topic_label = args.topic or f"(resume:{args.resume_run_id})"
@@ -218,13 +238,7 @@ def main() -> None:
 
     # Save report
     await_experiment_results = bool(final_state.get("await_experiment_results", False))
-    report = sget(final_state, "report", "")
-    if await_experiment_results and not str(report).strip():
-        report = (
-            "# Research Run Paused\n\n"
-            "The workflow is waiting for human-submitted experiment results.\n"
-            "Fill `experiment_results` in the saved state file and resume from HITL checkpoint.\n"
-        )
+    report = _resolve_report_text(final_state)
     run_report_path = run_dir / "research_report.md"
     run_report_path.write_text(report, encoding="utf-8")
     logger.info("Report saved: %s", run_report_path)
@@ -264,6 +278,10 @@ def main() -> None:
         "experiment_plan": sget(final_state, "experiment_plan", {}),
         "experiment_results": sget(final_state, "experiment_results", {}),
         "await_experiment_results": await_experiment_results,
+        "status": final_state.get("status", ""),
+        "iteration": final_state.get("iteration", 0),
+        "should_continue": final_state.get("should_continue", False),
+        "review": final_state.get("review", {}),
         "report_critic": sget(final_state, "report_critic", {}),
         "repair_attempted": sget(final_state, "repair_attempted", False),
         "run_id": final_state.get("run_id", ""),
