@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--topic", required=False, help="Research topic or question")
     p.add_argument("--resume-run-id", type=str, default=None, help="Resume from a checkpointed run id")
     p.add_argument("--config", default="configs/agent.yaml", help="Config file path")
+    p.add_argument("--mode", type=str, default="legacy", choices=["legacy", "os"], help="Execution mode")
     p.add_argument("--max_iter", type=int, default=None, help="Override max iterations")
     p.add_argument("--papers_per_query", type=int, default=None, help="Papers per search query")
     p.add_argument("--model", type=str, default=None, help="Override LLM model")
@@ -132,6 +133,17 @@ def _resolve_report_text(final_state: dict) -> str:
     return str(report)
 
 
+def _export_artifacts(final_state: dict) -> list[dict]:
+    artifacts = final_state.get("artifacts", [])
+    if not isinstance(artifacts, list):
+        return []
+    out: list[dict] = []
+    for item in artifacts:
+        if isinstance(item, dict):
+            out.append(redact_data(item))
+    return out
+
+
 def main() -> None:
     args = parse_args()
     topic_label = args.topic or f"(resume:{args.resume_run_id})"
@@ -205,8 +217,6 @@ def main() -> None:
     )
 
     # ── Run agent ────────────────────────────────────────────────────
-    from src.agent.graph import run_research
-
     enabled = [s for s in ALL_SOURCES if cfg["sources"].get(s, {}).get("enabled")]
 
     logger.info("=" * 60)
@@ -214,18 +224,31 @@ def main() -> None:
     logger.info("Topic: %s", topic_label)
     if args.resume_run_id:
         logger.info("Resume run id: %s", args.resume_run_id)
+    logger.info("Mode: %s", args.mode)
     logger.info("Model: %s", cfg.get("llm", {}).get("model", "gpt-4.1-mini"))
     logger.info("Max iterations: %s", cfg.get("agent", {}).get("max_iterations", 3))
     logger.info("Sources: %s", ", ".join(enabled))
     logger.info("=" * 60)
 
     run_started_global = time.time()
-    final_state = run_research(
-        topic=args.topic or "",
-        cfg=cfg,
-        root=ROOT,
-        resume_run_id=args.resume_run_id,
-    )
+    if args.mode == "os":
+        from src.agent.runtime.orchestrator import ResearchOrchestrator
+
+        orchestrator = ResearchOrchestrator(
+            cfg=cfg,
+            root=ROOT,
+            resume_run_id=args.resume_run_id,
+        )
+        final_state = orchestrator.run(topic=args.topic or "")
+    else:
+        from src.agent.graph import run_research
+
+        final_state = run_research(
+            topic=args.topic or "",
+            cfg=cfg,
+            root=ROOT,
+            resume_run_id=args.resume_run_id,
+        )
 
     # ── Write outputs ────────────────────────────────────────────────
     run_started = run_started_global
@@ -246,6 +269,7 @@ def main() -> None:
     # Save full state (JSON-serializable subset)
     state_export = {
         "topic": final_state.get("topic"),
+        "artifacts": _export_artifacts(final_state),
         "research_questions": sget(final_state, "research_questions", []),
         "search_queries": sget(final_state, "search_queries", []),
         "scope": sget(final_state, "scope", {}),
@@ -294,6 +318,13 @@ def main() -> None:
     run_state_path.write_text(json.dumps(state_export, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info("State saved: %s", run_state_path)
 
+    artifacts_path = run_dir / "artifacts.json"
+    artifacts_path.write_text(
+        json.dumps(_export_artifacts(final_state), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    logger.info("Artifacts saved: %s", artifacts_path)
+
     metrics_payload = {
         "acceptance_metrics": sget(final_state, "acceptance_metrics", {}),
         "counts": {
@@ -333,6 +364,7 @@ def main() -> None:
         "report_path": str(run_report_path),
         "state_path": str(run_state_path),
         "metrics_path": str(metrics_path),
+        "artifacts_path": str(artifacts_path),
     }
     run_meta_path = run_dir / "run_meta.json"
     run_meta_path.write_text(

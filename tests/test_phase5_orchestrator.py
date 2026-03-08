@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+from src.agent.core.artifact_utils import make_artifact, records_to_artifacts
+from src.agent.runtime.orchestrator import ResearchOrchestrator
+
+
+def _artifact(artifact_type: str, payload: dict) -> object:
+    return records_to_artifacts(
+        [make_artifact(artifact_type=artifact_type, producer="unit_test", payload=payload, source_inputs=["seed"])]
+    )[0]
+
+
+class Phase5OrchestratorTest(unittest.TestCase):
+    def test_orchestrator_pass_flow(self) -> None:
+        class _Conductor:
+            def __init__(self, *, context, state):
+                self.policy = SimpleNamespace(max_retries=1)
+
+            def plan(self, context):
+                return ["search_literature", "parse_paper_bundle", "extract_paper_notes", "build_related_work_matrix"]
+
+        class _Researcher:
+            def __init__(self, *, context, state):
+                self.state = state
+
+            def execute_plan(self, skill_ids, artifacts):
+                output = list(artifacts) + [
+                    _artifact("TopicBrief", {"topic": "t", "scope": {}}),
+                    _artifact("SearchPlan", {"research_questions": ["rq"], "search_queries": ["q"], "query_routes": {}}),
+                    _artifact("CorpusSnapshot", {"papers": [], "web_sources": [], "indexed_paper_ids": []}),
+                    _artifact("PaperNote", {"uid": "p1", "title": "Paper"}),
+                    _artifact("RelatedWorkMatrix", {"narrative": "narrative", "claims": []}),
+                    _artifact("GapMap", {"gaps": ["g1"]}),
+                ]
+                self.state["_artifact_objects"] = output
+                self.state["synthesis"] = "narrative"
+                return output
+
+        class _Critic:
+            def __init__(self, *, context, state):
+                self.state = state
+
+            def evaluate(self, artifacts):
+                return "pass", _artifact("CritiqueReport", {"verdict": {"action": "continue"}, "details": {}})
+
+        with patch("src.agent.runtime.orchestrator.ensure_plugins_registered"):
+            with patch("src.agent.runtime.orchestrator.ConductorAgent", _Conductor):
+                with patch("src.agent.runtime.orchestrator.ResearcherAgent", _Researcher):
+                    with patch("src.agent.runtime.orchestrator.CriticAgent", _Critic):
+                        orchestrator = ResearchOrchestrator(cfg={"llm": {"provider": "gemini"}}, root=".")
+                        state = orchestrator.run(topic="topic")
+        self.assertEqual(state["status"], "Research OS orchestration completed")
+        self.assertEqual(state["report"]["report"], "narrative")
+        self.assertIn("artifacts", state)
+
+    def test_orchestrator_revise_then_pass(self) -> None:
+        class _Conductor:
+            calls = 0
+
+            def __init__(self, *, context, state):
+                self.policy = SimpleNamespace(max_retries=2)
+
+            def plan(self, context):
+                type(self).calls += 1
+                return ["search_literature", "parse_paper_bundle", "extract_paper_notes", "build_related_work_matrix"]
+
+        class _Researcher:
+            calls = 0
+
+            def __init__(self, *, context, state):
+                self.state = state
+
+            def execute_plan(self, skill_ids, artifacts):
+                type(self).calls += 1
+                output = list(artifacts) + [
+                    _artifact("RelatedWorkMatrix", {"narrative": f"n{type(self).calls}", "claims": []})
+                ]
+                self.state["_artifact_objects"] = output
+                self.state["synthesis"] = f"n{type(self).calls}"
+                return output
+
+        class _Critic:
+            calls = 0
+
+            def __init__(self, *, context, state):
+                self.state = state
+
+            def evaluate(self, artifacts):
+                type(self).calls += 1
+                action = "retry_upstream" if type(self).calls == 1 else "continue"
+                return (
+                    "revise" if type(self).calls == 1 else "pass",
+                    _artifact("CritiqueReport", {"verdict": {"action": action}, "details": {"suggested_queries": ["q2"]}}),
+                )
+
+        with patch("src.agent.runtime.orchestrator.ensure_plugins_registered"):
+            with patch("src.agent.runtime.orchestrator.ConductorAgent", _Conductor):
+                with patch("src.agent.runtime.orchestrator.ResearcherAgent", _Researcher):
+                    with patch("src.agent.runtime.orchestrator.CriticAgent", _Critic):
+                        orchestrator = ResearchOrchestrator(cfg={"llm": {"provider": "gemini"}}, root=".")
+                        state = orchestrator.run(topic="topic")
+        self.assertEqual(state["status"], "Research OS orchestration completed")
+        self.assertEqual(state["iteration"], 1)
+        self.assertEqual(_Conductor.calls, 2)
+        self.assertEqual(_Researcher.calls, 2)
+        self.assertEqual(_Critic.calls, 2)
+
+    def test_orchestrator_stops_when_budget_exceeded(self) -> None:
+        with patch("src.agent.runtime.orchestrator.ensure_plugins_registered"):
+            with patch("src.agent.runtime.orchestrator.budget_guard_allows", return_value=(False, "budget exceeded")):
+                orchestrator = ResearchOrchestrator(cfg={"llm": {"provider": "gemini"}}, root=".")
+                state = orchestrator.run(topic="topic")
+        self.assertEqual(state["status"], "budget exceeded")
+        self.assertEqual(state["error"], "budget exceeded")
