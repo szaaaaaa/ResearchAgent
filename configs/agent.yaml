@@ -199,7 +199,7 @@ agent:
     figure_enrichment_start_iteration: 1
     figure_top_papers: 4
 ingest:
-  text_extraction: pymupdf_only
+  text_extraction: latex_first
   latex:
     download_source: true
     source_dir: ${project.data_dir}/sources
