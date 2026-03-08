@@ -1,0 +1,5 @@
+{
+  "name": "ResearchAgent UI",
+  "description": "A configuration and execution interface for ResearchAgent.",
+  "requestFramePermissions": []
+}
