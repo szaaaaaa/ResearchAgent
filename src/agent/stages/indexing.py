@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
+from src.agent.core.artifact_utils import append_artifacts, make_artifact, records_to_artifacts
 from src.agent.core.executor import TaskRequest
 from src.agent.core.executor_router import dispatch as _default_dispatch
 from src.agent.core.schemas import ResearchState
@@ -292,11 +293,25 @@ def index_sources(
     cumulative_web_ids = list(
         dict.fromkeys(list(state.get("indexed_web_ids", [])) + new_web_ids)
     )
+    new_artifacts = [
+        make_artifact(
+            artifact_type="CorpusSnapshot",
+            producer="index_sources",
+            payload={
+                "papers": list(state.get("papers", [])),
+                "web_sources": list(state.get("web_sources", [])),
+                "indexed_paper_ids": cumulative_paper_ids,
+            },
+            source_inputs=[str(uid) for uid in new_paper_ids + new_web_ids],
+        )
+    ]
     return ns(
         {
             "indexed_paper_ids": cumulative_paper_ids,
             "figure_indexed_paper_ids": cumulative_figure_ids,
             "indexed_web_ids": cumulative_web_ids,
+            "artifacts": append_artifacts(state.get("artifacts", []), new_artifacts),
+            "_artifacts": records_to_artifacts(new_artifacts),
             "status": (
                 f"Indexed {len(new_paper_ids)} new PDFs, {len(new_web_ids)} new web pages "
                 f"(cumulative: {len(cumulative_paper_ids)} papers, {len(cumulative_web_ids)} web)"

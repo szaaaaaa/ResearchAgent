@@ -5,6 +5,7 @@ import json
 import logging
 from typing import Any, Callable, Dict
 
+from src.agent.core.artifact_utils import append_artifacts, make_artifact, records_to_artifacts
 from src.agent.core.config import DEFAULT_MAX_CONTEXT_CHARS, DEFAULT_MAX_FINDINGS_FOR_CONTEXT
 from src.agent.core.query_planning import (
     _academic_sources_enabled,
@@ -171,6 +172,25 @@ def plan_research(
         )
     )
 
+    new_artifacts = [
+        make_artifact(
+            artifact_type="TopicBrief",
+            producer="plan_research",
+            payload={"topic": topic, "scope": scope},
+            source_inputs=[topic],
+        ),
+        make_artifact(
+            artifact_type="SearchPlan",
+            producer="plan_research",
+            payload={
+                "research_questions": research_questions,
+                "search_queries": all_queries,
+                "query_routes": query_routes,
+            },
+            source_inputs=[topic],
+        ),
+    ]
+
     return ns(
         {
             "research_questions": research_questions,
@@ -181,6 +201,8 @@ def plan_research(
             "memory_summary": prev_findings if iteration > 0 else "",
             "_academic_queries": routed_academic,
             "_web_queries": routed_web,
+            "artifacts": append_artifacts(state.get("artifacts", []), new_artifacts),
+            "_artifacts": records_to_artifacts(new_artifacts),
             "_focus_research_questions": [],
             "status": (
                 f"Iteration {iteration}: planned {len(routed_academic)} academic + "

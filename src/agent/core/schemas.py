@@ -184,6 +184,15 @@ class SearchFetchResult(TypedDict):
     web_sources: List[WebResult]
 
 
+class ArtifactRecord(TypedDict, total=False):
+    artifact_type: str
+    artifact_id: str
+    producer: str
+    source_inputs: List[str]
+    payload: Dict[str, Any]
+    created_at: str
+
+
 class ResearchNamespace(TypedDict, total=False):
     papers: List[PaperRecord]
     indexed_paper_ids: List[str]
@@ -325,6 +334,7 @@ class ResearchState(TypedDict, total=False):
     topic: str
     status: str
     run_id: str
+    artifacts: List[ArtifactRecord]
     iteration: int
     max_iterations: int
     should_continue: bool

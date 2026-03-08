@@ -23,27 +23,248 @@ from typing import Any, Dict
 
 from langgraph.graph import END, StateGraph
 
+from src.agent.artifacts.base import Artifact
+from src.agent.artifacts.registry import ArtifactRegistry
+from src.agent.core.artifact_utils import records_to_artifacts
 from src.agent.core.budget import BudgetGuard
 from src.agent.core.checkpointing import build_checkpointer, build_run_config, checkpointing_enabled
-from src.agent.core.config import normalize_and_validate_config
+from src.agent.core.config import DEFAULT_CORE_MIN_A_RATIO, normalize_and_validate_config
+from src.agent.core.evidence import _build_evidence_audit_log
 from src.agent.core.events import emit_event, instrument_node
+from src.agent.core.query_planning import _load_budget_and_scope as _load_budget_and_scope
 from src.agent.core.schemas import ResearchState
-from src.agent.core.state_access import sget
+from src.agent.core.state_access import sget, to_namespaced_update
+from src.agent.plugins.bootstrap import ensure_plugins_registered
+from src.agent.skills.registry import get_skill_registry
 from src.agent.tracing.trace_grader import grade_trace
 from src.agent.tracing.trace_logger import TraceLogger
-from src.agent.stages.analysis import analyze_sources
 from src.agent.stages.evaluation import evaluate_progress
 from src.agent.stages.experiments import ingest_experiment_results, recommend_experiments
-from src.agent.stages.indexing import index_sources
-from src.agent.stages.planning import plan_research
-from src.agent.stages.retrieval import fetch_sources
 from src.agent.stages.reporting import generate_report
-from src.agent.stages.synthesis import synthesize
 from src.agent.reviewers.experiment_reviewer import review_experiment
 from src.agent.reviewers.post_report_review import review_claims_and_citations
-from src.agent.reviewers.retrieval_reviewer import review_retrieval
 
 logger = logging.getLogger(__name__)
+
+
+def _with_artifact_persistence(fn: Any) -> Any:
+    def _wrapped(state: Dict[str, Any]) -> Dict[str, Any]:
+        out = fn(state)
+        if not isinstance(out, dict):
+            return out
+
+        pending_artifacts = out.pop("_artifacts", [])
+        if not pending_artifacts:
+            return out
+
+        cfg = state.get("_cfg", {}) if isinstance(state, dict) else {}
+        run_id = str((state.get("run_id") if isinstance(state, dict) else "") or cfg.get("_run_id", ""))
+        registry = ArtifactRegistry.for_runtime(cfg=cfg, run_id=run_id)
+        for artifact in pending_artifacts:
+            registry.save(artifact)
+        return out
+
+    return _wrapped
+
+
+def _artifact_records(state: Dict[str, Any]) -> list[dict[str, Any]]:
+    artifacts = state.get("artifacts", [])
+    if isinstance(artifacts, list):
+        return [item for item in artifacts if isinstance(item, dict)]
+    return []
+
+
+def _typed_artifacts(state: Dict[str, Any]) -> list[Artifact]:
+    return records_to_artifacts(_artifact_records(state))
+
+
+def _latest_artifact(state: Dict[str, Any], artifact_type: str) -> Artifact | None:
+    matches = [artifact for artifact in _typed_artifacts(state) if artifact.artifact_type == artifact_type]
+    if not matches:
+        return None
+    return matches[-1]
+
+
+def _all_artifacts(state: Dict[str, Any], artifact_type: str) -> list[Artifact]:
+    return [artifact for artifact in _typed_artifacts(state) if artifact.artifact_type == artifact_type]
+
+
+def _append_artifact_records(state: Dict[str, Any], new_artifacts: list[Artifact]) -> list[dict[str, Any]]:
+    records = _artifact_records(state)
+    records.extend(artifact.to_record() for artifact in new_artifacts)
+    return records
+
+
+def _find_output_artifact(output_artifacts: list[Artifact], artifact_type: str) -> Artifact:
+    for artifact in reversed(output_artifacts):
+        if artifact.artifact_type == artifact_type:
+            return artifact
+    raise RuntimeError(f"Skill output missing required artifact: {artifact_type}")
+
+
+def _invoke_skill(state: Dict[str, Any], skill_id: str, input_artifacts: list[Any]) -> list[Artifact]:
+    ensure_plugins_registered()
+    cfg = dict(state.get("_cfg", {}))
+    cfg["_skill_state"] = state
+    result = get_skill_registry().invoke(skill_id, input_artifacts, cfg)
+    if not result.success:
+        raise RuntimeError(result.error or f"Skill {skill_id} failed")
+    return list(result.output_artifacts)
+
+
+def _skill_plan_research(state: ResearchState) -> Dict[str, Any]:
+    output_artifacts = _invoke_skill(state, "plan_research", [str(state.get("topic", ""))])
+    topic_brief = _find_output_artifact(output_artifacts, "TopicBrief")
+    search_plan = _find_output_artifact(output_artifacts, "SearchPlan")
+    query_routes = dict(search_plan.payload.get("query_routes", {}))
+    search_queries = list(search_plan.payload.get("search_queries", []))
+    academic_queries = [query for query in search_queries if query_routes.get(query, {}).get("use_academic", True)]
+    web_queries = [query for query in search_queries if query_routes.get(query, {}).get("use_web", False)]
+    cfg = state.get("_cfg", {})
+    _, budget = _load_budget_and_scope(state, cfg)
+    return to_namespaced_update(
+        {
+            "research_questions": list(search_plan.payload.get("research_questions", [])),
+            "search_queries": search_queries,
+            "query_routes": query_routes,
+            "scope": dict(topic_brief.payload.get("scope", {})),
+            "budget": budget,
+            "_academic_queries": academic_queries,
+            "_web_queries": web_queries,
+            "_focus_research_questions": [],
+            "artifacts": _append_artifact_records(state, output_artifacts),
+            "_artifacts": output_artifacts,
+            "status": f"Skill plan_research produced {len(search_queries)} routed queries",
+        }
+    )
+
+
+def _skill_fetch_sources(state: ResearchState) -> Dict[str, Any]:
+    search_plan = _latest_artifact(state, "SearchPlan")
+    if search_plan is None:
+        raise RuntimeError("search_literature requires SearchPlan artifact in state")
+    output_artifacts = _invoke_skill(state, "search_literature", [search_plan])
+    corpus_snapshot = _find_output_artifact(output_artifacts, "CorpusSnapshot")
+    return to_namespaced_update(
+        {
+            "papers": list(corpus_snapshot.payload.get("papers", [])),
+            "web_sources": list(corpus_snapshot.payload.get("web_sources", [])),
+            "indexed_paper_ids": list(corpus_snapshot.payload.get("indexed_paper_ids", [])),
+            "artifacts": _append_artifact_records(state, output_artifacts),
+            "_artifacts": output_artifacts,
+            "status": "Skill search_literature completed",
+        }
+    )
+
+
+def _skill_index_sources(state: ResearchState) -> Dict[str, Any]:
+    corpus_snapshot = _latest_artifact(state, "CorpusSnapshot")
+    if corpus_snapshot is None:
+        raise RuntimeError("parse_paper_bundle requires CorpusSnapshot artifact in state")
+    output_artifacts = _invoke_skill(state, "parse_paper_bundle", [corpus_snapshot])
+    updated_snapshot = _find_output_artifact(output_artifacts, "CorpusSnapshot")
+    return to_namespaced_update(
+        {
+            "papers": list(updated_snapshot.payload.get("papers", [])),
+            "web_sources": list(updated_snapshot.payload.get("web_sources", [])),
+            "indexed_paper_ids": list(updated_snapshot.payload.get("indexed_paper_ids", [])),
+            "figure_indexed_paper_ids": list(sget(state, "figure_indexed_paper_ids", [])),
+            "indexed_web_ids": list(sget(state, "indexed_web_ids", [])),
+            "artifacts": _append_artifact_records(state, output_artifacts),
+            "_artifacts": output_artifacts,
+            "status": "Skill parse_paper_bundle completed",
+        }
+    )
+
+
+def _skill_analyze_sources(state: ResearchState) -> Dict[str, Any]:
+    corpus_snapshot = _latest_artifact(state, "CorpusSnapshot")
+    if corpus_snapshot is None:
+        raise RuntimeError("extract_paper_notes requires CorpusSnapshot artifact in state")
+    output_artifacts = _invoke_skill(state, "extract_paper_notes", [corpus_snapshot])
+    new_analyses = [dict(artifact.payload) for artifact in output_artifacts if artifact.artifact_type == "PaperNote"]
+    existing_analyses = list(sget(state, "analyses", []))
+    existing_findings = list(sget(state, "findings", []))
+    new_findings: list[str] = []
+    for analysis in new_analyses:
+        prefix = "Web" if str(analysis.get("source_type", "")).lower() == "web" else "Paper"
+        title = str(analysis.get("title", "Unknown"))
+        for finding in analysis.get("key_findings", []):
+            new_findings.append(f"[{prefix}: {title}] {finding}")
+    return to_namespaced_update(
+        {
+            "analyses": existing_analyses + new_analyses,
+            "findings": existing_findings + new_findings,
+            "artifacts": _append_artifact_records(state, output_artifacts),
+            "_artifacts": output_artifacts,
+            "status": "Skill extract_paper_notes completed",
+        }
+    )
+
+
+def _skill_synthesize(state: ResearchState) -> Dict[str, Any]:
+    search_plan = _latest_artifact(state, "SearchPlan")
+    if search_plan is None:
+        raise RuntimeError("build_related_work_matrix requires SearchPlan artifact in state")
+    paper_notes = _all_artifacts(state, "PaperNote")
+    if not paper_notes:
+        raise RuntimeError("build_related_work_matrix requires PaperNote artifacts in state")
+    output_artifacts = _invoke_skill(state, "build_related_work_matrix", [*paper_notes, search_plan])
+    related_work = _find_output_artifact(output_artifacts, "RelatedWorkMatrix")
+    gap_map = _find_output_artifact(output_artifacts, "GapMap")
+    cfg = state.get("_cfg", {})
+    source_rank_cfg = cfg.get("agent", {}).get("source_ranking", {})
+    core_min_a_ratio = float(source_rank_cfg.get("core_min_a_ratio", DEFAULT_CORE_MIN_A_RATIO))
+    claim_map = list(related_work.payload.get("claims", []))
+    research_questions = list(search_plan.payload.get("research_questions", []))
+    evidence_audit_log = _build_evidence_audit_log(
+        research_questions=research_questions,
+        claim_map=claim_map,
+        core_min_a_ratio=core_min_a_ratio,
+    )
+    return to_namespaced_update(
+        {
+            "synthesis": str(related_work.payload.get("narrative", "")),
+            "claim_evidence_map": claim_map,
+            "evidence_audit_log": evidence_audit_log,
+            "gaps": list(gap_map.payload.get("gaps", [])),
+            "artifacts": _append_artifact_records(state, output_artifacts),
+            "_artifacts": output_artifacts,
+            "status": "Skill build_related_work_matrix completed",
+        }
+    )
+
+
+def _skill_review_retrieval(state: ResearchState) -> Dict[str, Any]:
+    corpus_snapshot = _latest_artifact(state, "CorpusSnapshot")
+    if corpus_snapshot is None:
+        raise RuntimeError("critique_retrieval requires CorpusSnapshot artifact in state")
+    output_artifacts = _invoke_skill(state, "critique_retrieval", [corpus_snapshot])
+    critique_report = _find_output_artifact(output_artifacts, "CritiqueReport")
+    verdict = dict(critique_report.payload.get("verdict", {}))
+    details = dict(critique_report.payload.get("details", {}))
+    reviewer_log = list(sget(state, "reviewer_log", []))
+    reviewer_log.append(verdict)
+    current_retries = int(state.get("_retrieval_review_retries", 0) or 0)
+    update: Dict[str, Any] = {
+        "review": {
+            "retrieval_review": details,
+            "reviewer_log": reviewer_log,
+        },
+        "artifacts": _append_artifact_records(state, output_artifacts),
+        "_artifacts": output_artifacts,
+        "status": f"Retrieval review: {verdict.get('status', 'unknown')} ({len(verdict.get('issues', []))} issues)",
+    }
+    if verdict.get("action") == "retry_upstream":
+        suggested_queries = [str(item) for item in details.get("suggested_queries", []) if str(item).strip()]
+        merged_queries = list(dict.fromkeys(list(sget(state, "search_queries", [])) + suggested_queries))
+        update["search_queries"] = merged_queries
+        update["_academic_queries"] = merged_queries
+        update["_web_queries"] = merged_queries
+        update["_retrieval_review_retries"] = current_retries + 1
+    else:
+        update["_retrieval_review_retries"] = 0
+    return to_namespaced_update(update)
 
 
 def _route_after_evaluate(state: ResearchState) -> str:
@@ -137,23 +358,23 @@ def build_graph(*, checkpointer: Any | None = None) -> StateGraph:
     graph = StateGraph(ResearchState)
 
     # ── Add nodes ────────────────────────────────────────────────────
-    graph.add_node("plan_research", instrument_node("plan_research", plan_research))
-    graph.add_node("fetch_sources", instrument_node("fetch_sources", fetch_sources))
-    graph.add_node("index_sources", instrument_node("index_sources", index_sources))
-    graph.add_node("analyze_sources", instrument_node("analyze_sources", analyze_sources))
-    graph.add_node("review_retrieval", instrument_node("review_retrieval", review_retrieval))
-    graph.add_node("synthesize", instrument_node("synthesize", synthesize))
-    graph.add_node("recommend_experiments", instrument_node("recommend_experiments", recommend_experiments))
+    graph.add_node("plan_research", instrument_node("plan_research", _with_artifact_persistence(_skill_plan_research)))
+    graph.add_node("fetch_sources", instrument_node("fetch_sources", _with_artifact_persistence(_skill_fetch_sources)))
+    graph.add_node("index_sources", instrument_node("index_sources", _with_artifact_persistence(_skill_index_sources)))
+    graph.add_node("analyze_sources", instrument_node("analyze_sources", _with_artifact_persistence(_skill_analyze_sources)))
+    graph.add_node("review_retrieval", instrument_node("review_retrieval", _with_artifact_persistence(_skill_review_retrieval)))
+    graph.add_node("synthesize", instrument_node("synthesize", _with_artifact_persistence(_skill_synthesize)))
+    graph.add_node("recommend_experiments", instrument_node("recommend_experiments", _with_artifact_persistence(recommend_experiments)))
     graph.add_node(
         "ingest_experiment_results",
-        instrument_node("ingest_experiment_results", ingest_experiment_results),
+        instrument_node("ingest_experiment_results", _with_artifact_persistence(ingest_experiment_results)),
     )
-    graph.add_node("review_experiment", instrument_node("review_experiment", review_experiment))
-    graph.add_node("evaluate_progress", instrument_node("evaluate_progress", evaluate_progress))
-    graph.add_node("generate_report", instrument_node("generate_report", generate_report))
+    graph.add_node("review_experiment", instrument_node("review_experiment", _with_artifact_persistence(review_experiment)))
+    graph.add_node("evaluate_progress", instrument_node("evaluate_progress", _with_artifact_persistence(evaluate_progress)))
+    graph.add_node("generate_report", instrument_node("generate_report", _with_artifact_persistence(generate_report)))
     graph.add_node(
         "review_claims_and_citations",
-        instrument_node("review_claims_and_citations", review_claims_and_citations),
+        instrument_node("review_claims_and_citations", _with_artifact_persistence(review_claims_and_citations)),
     )
 
     # ── Edges ────────────────────────────────────────────────────────
@@ -267,6 +488,7 @@ def run_research(
 
     initial_state: ResearchState = {
         "topic": topic,
+        "artifacts": [],
         "planning": {
             "research_questions": [],
             "search_queries": [],

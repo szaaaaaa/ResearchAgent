@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
+from src.agent.core.artifact_utils import append_artifacts, make_artifact, records_to_artifacts
 from src.agent.core.config import (
     DEFAULT_MIN_ANCHOR_HITS,
     DEFAULT_MIN_KEYWORD_HITS,
@@ -144,10 +145,24 @@ def fetch_sources(
 
     cumulative_papers = existing_papers + new_papers
     cumulative_web = existing_web + new_web
+    new_artifacts = [
+        make_artifact(
+            artifact_type="CorpusSnapshot",
+            producer="fetch_sources",
+            payload={
+                "papers": cumulative_papers,
+                "web_sources": cumulative_web,
+                "indexed_paper_ids": list(state.get("indexed_paper_ids", [])),
+            },
+            source_inputs=list(effective_academic_queries + effective_web_queries),
+        )
+    ]
     return ns(
         {
             "papers": cumulative_papers,
             "web_sources": cumulative_web,
+            "artifacts": append_artifacts(state.get("artifacts", []), new_artifacts),
+            "_artifacts": records_to_artifacts(new_artifacts),
             "status": (
                 f"Fetched {len(new_papers)} new papers, {len(new_web)} new web sources "
                 f"(cumulative: {len(cumulative_papers)} papers, {len(cumulative_web)} web) "

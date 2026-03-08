@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Dict
 
+from src.agent.core.artifact_utils import append_artifacts, make_artifact, records_to_artifacts
 from src.agent.core.config import (
     DEFAULT_CORE_MIN_A_RATIO,
     DEFAULT_MAX_REFERENCES,
@@ -125,6 +126,23 @@ def synthesize(
         if item.get("gaps")
     ]
     merged_gaps = list(dict.fromkeys(result.get("gaps", []) + audit_gaps))
+    new_artifacts = [
+        make_artifact(
+            artifact_type="RelatedWorkMatrix",
+            producer="synthesize",
+            payload={
+                "narrative": result.get("synthesis", raw),
+                "claims": claim_map,
+            },
+            source_inputs=list(state.get("research_questions", [])),
+        ),
+        make_artifact(
+            artifact_type="GapMap",
+            producer="synthesize",
+            payload={"gaps": merged_gaps},
+            source_inputs=list(state.get("research_questions", [])),
+        ),
+    ]
 
     return ns(
         {
@@ -132,6 +150,8 @@ def synthesize(
             "claim_evidence_map": claim_map,
             "evidence_audit_log": evidence_audit_log,
             "gaps": merged_gaps,
+            "artifacts": append_artifacts(state.get("artifacts", []), new_artifacts),
+            "_artifacts": records_to_artifacts(new_artifacts),
             "status": "Synthesis complete",
         }
     )

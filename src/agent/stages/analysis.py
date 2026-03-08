@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
+from src.agent.core.artifact_utils import append_artifacts, make_artifact, records_to_artifacts
 from src.agent.core.config import DEFAULT_ANALYSIS_WEB_CONTENT_MAX_CHARS
 from src.agent.core.executor import TaskRequest
 from src.agent.core.executor_router import dispatch as _default_dispatch
@@ -259,10 +260,21 @@ def analyze_sources(
 
     cumulative_analyses = existing_analyses + new_analyses
     cumulative_findings = existing_findings + new_findings
+    new_artifacts = [
+        make_artifact(
+            artifact_type="PaperNote",
+            producer="analyze_sources",
+            payload=analysis,
+            source_inputs=[str(analysis.get("uid") or "")],
+        )
+        for analysis in new_analyses
+    ]
     return ns(
         {
             "analyses": cumulative_analyses,
             "findings": cumulative_findings,
+            "artifacts": append_artifacts(state.get("artifacts", []), new_artifacts),
+            "_artifacts": records_to_artifacts(new_artifacts),
             "status": (
                 f"Analyzed {len(papers_to_analyze)} new papers + {len(web_to_analyze)} new web sources, "
                 f"extracted {len(new_findings)} new findings "

@@ -17,6 +17,7 @@ from collections import Counter
 from typing import Any, Dict, List, Set
 from urllib.parse import urlparse
 
+from src.agent.core.artifact_utils import append_artifacts, make_artifact, records_to_artifacts
 from src.agent.core.schemas import (
     ResearchState,
     RetrievalReview,
@@ -353,11 +354,25 @@ def review_retrieval(state: ResearchState) -> Dict[str, Any]:
     existing_log = list(sget(state, "reviewer_log", []))
     existing_log.append(dict(verdict))
 
+    new_artifacts = [
+        make_artifact(
+            artifact_type="CritiqueReport",
+            producer="review_retrieval",
+            payload={
+                "verdict": dict(verdict),
+                "details": dict(retrieval_review),
+            },
+            source_inputs=list(existing_queries),
+        )
+    ]
+
     update: Dict[str, Any] = {
         "review": {
             "retrieval_review": dict(retrieval_review),
             "reviewer_log": existing_log,
         },
+        "artifacts": append_artifacts(state.get("artifacts", []), new_artifacts),
+        "_artifacts": records_to_artifacts(new_artifacts),
         "status": f"Retrieval review: {status} ({len(issues)} issues)",
     }
 
