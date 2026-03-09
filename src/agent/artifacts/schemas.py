@@ -45,6 +45,52 @@ class CritiqueReportPayload(TypedDict):
     details: Dict[str, Any]
 
 
+class ExperimentPlanPayload(TypedDict, total=False):
+    domain: str
+    subfield: str
+    task_type: str
+    rq_experiments: list[Dict[str, Any]]
+
+
+class ExperimentResultsPayload(TypedDict, total=False):
+    status: str
+    submitted_by: str
+    submitted_at: str
+    runs: list[Dict[str, Any]]
+    summaries: list[Dict[str, Any]]
+    validation_issues: list[str]
+
+
+class ExperimentAnalysisPayload(TypedDict, total=False):
+    summary: str
+    key_findings: list[str]
+    performance_metrics: Dict[str, Any]
+    runs_analyzed: int
+    research_questions: list[str]
+    result_status: str
+    submitted_at: str
+    submitted_by: str
+
+
+class PerformanceMetricsPayload(TypedDict, total=False):
+    status: str
+    run_count: int
+    summary_count: int
+    research_question_count: int
+    research_questions: list[str]
+    metric_stats: Dict[str, Dict[str, Any]]
+    validation_issue_count: int
+    validated: bool
+
+
+class ResearchReportPayload(TypedDict, total=False):
+    report: str
+    report_critic: Dict[str, Any]
+    repair_attempted: bool
+    acceptance_metrics: Dict[str, Any]
+    status: str
+
+
 @dataclass(frozen=True)
 class TopicBrief(Artifact):
     payload: TopicBriefPayload
@@ -80,6 +126,31 @@ class CritiqueReport(Artifact):
     payload: CritiqueReportPayload
 
 
+@dataclass(frozen=True)
+class ExperimentPlanArtifact(Artifact):
+    payload: ExperimentPlanPayload
+
+
+@dataclass(frozen=True)
+class ExperimentResultsArtifact(Artifact):
+    payload: ExperimentResultsPayload
+
+
+@dataclass(frozen=True)
+class ExperimentAnalysisArtifact(Artifact):
+    payload: ExperimentAnalysisPayload
+
+
+@dataclass(frozen=True)
+class PerformanceMetricsArtifact(Artifact):
+    payload: PerformanceMetricsPayload
+
+
+@dataclass(frozen=True)
+class ResearchReportArtifact(Artifact):
+    payload: ResearchReportPayload
+
+
 _ARTIFACT_CLASS_BY_TYPE = {
     "TopicBrief": TopicBrief,
     "SearchPlan": SearchPlan,
@@ -88,6 +159,11 @@ _ARTIFACT_CLASS_BY_TYPE = {
     "RelatedWorkMatrix": RelatedWorkMatrix,
     "GapMap": GapMap,
     "CritiqueReport": CritiqueReport,
+    "ExperimentPlan": ExperimentPlanArtifact,
+    "ExperimentResults": ExperimentResultsArtifact,
+    "ExperimentAnalysis": ExperimentAnalysisArtifact,
+    "PerformanceMetrics": PerformanceMetricsArtifact,
+    "ResearchReport": ResearchReportArtifact,
 }
 
 

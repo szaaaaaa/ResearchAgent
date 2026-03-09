@@ -372,6 +372,8 @@ class ResearchState(TypedDict, total=False):
     synthesis: str
     experiment_plan: ExperimentPlan
     experiment_results: ExperimentResults
+    result_analysis: Dict[str, Any]
+    performance_metrics: Dict[str, Any]
     report_critic: Dict[str, Any]
     repair_attempted: bool
     acceptance_metrics: RunMetrics

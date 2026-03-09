@@ -33,7 +33,7 @@ from src.agent.core.secret_redaction import install_logging_redaction, redact_da
 from src.agent.core.state_access import sget
 
 ALL_SOURCES = ("arxiv", "google_scholar", "semantic_scholar", "web")
-ROLE_IDS = ("conductor", "researcher", "critic")
+ROLE_IDS = ("conductor", "researcher", "experimenter", "analyst", "writer", "critic")
 
 
 def parse_args() -> argparse.Namespace:
@@ -392,6 +392,7 @@ def main() -> None:
         "artifacts_path": str(artifacts_path),
     }
     run_meta_path = run_dir / "run_meta.json"
+    ensure_dir(run_meta_path.parent)
     run_meta_path.write_text(
         json.dumps(redact_data(run_meta), ensure_ascii=False, indent=2),
         encoding="utf-8",

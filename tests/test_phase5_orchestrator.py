@@ -15,7 +15,7 @@ def _artifact(artifact_type: str, payload: dict) -> object:
 
 
 class Phase5OrchestratorTest(unittest.TestCase):
-    def test_orchestrator_pass_flow(self) -> None:
+    def test_orchestrator_pass_flow_with_all_six_roles(self) -> None:
         class _Conductor:
             def __init__(self, *, context, state):
                 self.policy = SimpleNamespace(max_retries=1)
@@ -69,6 +69,106 @@ class Phase5OrchestratorTest(unittest.TestCase):
                 self.state["synthesis"] = "narrative"
                 return output
 
+        class _Experimenter:
+            def __init__(self, *, context, state):
+                self.state = state
+
+            def design(self, artifacts):
+                output = list(artifacts) + [
+                    _artifact(
+                        "ExperimentPlan",
+                        {
+                            "domain": "machine_learning",
+                            "subfield": "nlp",
+                            "task_type": "classification",
+                            "rq_experiments": [{"research_question": "rq"}],
+                        },
+                    ),
+                    _artifact(
+                        "ExperimentResults",
+                        {
+                            "status": "validated",
+                            "runs": [
+                                {
+                                    "run_id": "run-1",
+                                    "research_question": "rq",
+                                    "metrics": [{"name": "F1", "value": 0.84, "higher_is_better": True}],
+                                }
+                            ],
+                            "summaries": [{"research_question": "rq", "best_run_id": "run-1", "conclusion": "good"}],
+                            "validation_issues": [],
+                        },
+                    ),
+                ]
+                self.state["_artifact_objects"] = output
+                self.state["experiment_plan"] = {
+                    "domain": "machine_learning",
+                    "subfield": "nlp",
+                    "task_type": "classification",
+                    "rq_experiments": [{"research_question": "rq"}],
+                }
+                self.state["experiment_results"] = {
+                    "status": "validated",
+                    "runs": [
+                        {
+                            "run_id": "run-1",
+                            "research_question": "rq",
+                            "metrics": [{"name": "F1", "value": 0.84, "higher_is_better": True}],
+                        }
+                    ],
+                    "summaries": [{"research_question": "rq", "best_run_id": "run-1", "conclusion": "good"}],
+                    "validation_issues": [],
+                }
+                self.state["await_experiment_results"] = False
+                return output
+
+        class _Analyst:
+            def __init__(self, *, context, state):
+                self.state = state
+
+            def analyze(self, artifacts):
+                output = list(artifacts) + [
+                    _artifact(
+                        "ExperimentAnalysis",
+                        {
+                            "summary": "Validated one experiment run.",
+                            "key_findings": ["Best F1 = 0.84 from run-1."],
+                            "performance_metrics": {"validated": True, "run_count": 1},
+                        },
+                    ),
+                    _artifact("PerformanceMetrics", {"validated": True, "run_count": 1}),
+                ]
+                self.state["_artifact_objects"] = output
+                self.state["result_analysis"] = {
+                    "summary": "Validated one experiment run.",
+                    "key_findings": ["Best F1 = 0.84 from run-1."],
+                    "performance_metrics": {"validated": True, "run_count": 1},
+                }
+                self.state["performance_metrics"] = {"validated": True, "run_count": 1}
+                return output
+
+        class _Writer:
+            def __init__(self, *, context, state):
+                self.state = state
+
+            def write(self, artifacts):
+                output = list(artifacts) + [
+                    _artifact(
+                        "ResearchReport",
+                        {
+                            "report": "# Final Report\n\nValidated one run.",
+                            "report_critic": {"pass": True},
+                            "repair_attempted": False,
+                            "acceptance_metrics": {"note": "ok"},
+                        },
+                    )
+                ]
+                self.state["_artifact_objects"] = output
+                self.state["report"] = {"report": "# Final Report\n\nValidated one run."}
+                self.state["report_critic"] = {"pass": True}
+                self.state["acceptance_metrics"] = {"note": "ok"}
+                return output
+
         class _Critic:
             def __init__(self, *, context, state):
                 self.state = state
@@ -79,20 +179,28 @@ class Phase5OrchestratorTest(unittest.TestCase):
         with patch("src.agent.runtime.orchestrator.ensure_plugins_registered"):
             with patch("src.agent.runtime.orchestrator.ConductorAgent", _Conductor):
                 with patch("src.agent.runtime.orchestrator.ResearcherAgent", _Researcher):
-                    with patch("src.agent.runtime.orchestrator.CriticAgent", _Critic):
-                        orchestrator = ResearchOrchestrator(cfg={"llm": {"provider": "gemini"}}, root=".")
-                        state = orchestrator.run(topic="topic")
-        self.assertEqual(state["status"], "Research OS orchestration completed")
-        report = state["report"]["report"]
-        self.assertIn("# Stage Research Brief: topic", report)
-        self.assertIn("## Current Synthesis", report)
-        self.assertIn("narrative", report)
-        self.assertIn("## Source-by-Source Conclusions", report)
-        self.assertIn("## Cross-Source View", report)
-        self.assertIn("### Gaps and Next Ideas", report)
-        self.assertIn("artifacts", state)
+                    with patch("src.agent.runtime.orchestrator.ExperimenterAgent", _Experimenter):
+                        with patch("src.agent.runtime.orchestrator.AnalystAgent", _Analyst):
+                            with patch("src.agent.runtime.orchestrator.WriterAgent", _Writer):
+                                with patch("src.agent.runtime.orchestrator.CriticAgent", _Critic):
+                                    orchestrator = ResearchOrchestrator(cfg={"llm": {"provider": "gemini"}}, root=".")
+                                    state = orchestrator.run(topic="topic")
 
-    def test_orchestrator_revise_then_pass(self) -> None:
+        self.assertEqual(state["status"], "Research OS orchestration completed")
+        self.assertEqual(state["role_status"]["experimenter"], "completed")
+        self.assertEqual(state["role_status"]["analyst"], "completed")
+        self.assertEqual(state["role_status"]["writer"], "completed")
+        self.assertIn("# Final Report", state["report"]["report"])
+        self.assertEqual(state["result_analysis"]["summary"], "Validated one experiment run.")
+        self.assertTrue(state["performance_metrics"]["validated"])
+        artifact_types = [artifact["artifact_type"] for artifact in state["artifacts"]]
+        self.assertIn("ExperimentPlan", artifact_types)
+        self.assertIn("ExperimentResults", artifact_types)
+        self.assertIn("ExperimentAnalysis", artifact_types)
+        self.assertIn("PerformanceMetrics", artifact_types)
+        self.assertIn("ResearchReport", artifact_types)
+
+    def test_orchestrator_revise_then_pass_runs_downstream_roles_once(self) -> None:
         class _Conductor:
             calls = 0
 
@@ -112,13 +220,69 @@ class Phase5OrchestratorTest(unittest.TestCase):
             def execute_plan(self, skill_ids, artifacts):
                 type(self).calls += 1
                 output = list(artifacts) + [
-                    _artifact("RelatedWorkMatrix", {"narrative": f"n{type(self).calls}", "claims": []})
+                    _artifact("CorpusSnapshot", {"papers": [], "web_sources": [], "indexed_paper_ids": []}),
+                    _artifact("RelatedWorkMatrix", {"narrative": f"n{type(self).calls}", "claims": []}),
+                    _artifact("GapMap", {"gaps": [f"gap-{type(self).calls}"]}),
                 ]
                 self.state["_artifact_objects"] = output
                 self.state["analyses"] = []
                 self.state["findings"] = [f"finding-{type(self).calls}"]
                 self.state["gaps"] = [f"gap-{type(self).calls}"]
                 self.state["synthesis"] = f"n{type(self).calls}"
+                return output
+
+        class _Experimenter:
+            calls = 0
+
+            def __init__(self, *, context, state):
+                self.state = state
+
+            def design(self, artifacts):
+                type(self).calls += 1
+                output = list(artifacts) + [
+                    _artifact("ExperimentPlan", {"rq_experiments": [{"research_question": "rq"}]}),
+                    _artifact(
+                        "ExperimentResults",
+                        {"status": "validated", "runs": [{"run_id": "run-1", "research_question": "rq", "metrics": []}]},
+                    ),
+                ]
+                self.state["_artifact_objects"] = output
+                self.state["experiment_plan"] = {"rq_experiments": [{"research_question": "rq"}]}
+                self.state["experiment_results"] = {
+                    "status": "validated",
+                    "runs": [{"run_id": "run-1", "research_question": "rq", "metrics": []}],
+                }
+                self.state["await_experiment_results"] = False
+                return output
+
+        class _Analyst:
+            calls = 0
+
+            def __init__(self, *, context, state):
+                self.state = state
+
+            def analyze(self, artifacts):
+                type(self).calls += 1
+                output = list(artifacts) + [
+                    _artifact("ExperimentAnalysis", {"summary": "analysis"}),
+                    _artifact("PerformanceMetrics", {"validated": True}),
+                ]
+                self.state["_artifact_objects"] = output
+                self.state["result_analysis"] = {"summary": "analysis"}
+                self.state["performance_metrics"] = {"validated": True}
+                return output
+
+        class _Writer:
+            calls = 0
+
+            def __init__(self, *, context, state):
+                self.state = state
+
+            def write(self, artifacts):
+                type(self).calls += 1
+                output = list(artifacts) + [_artifact("ResearchReport", {"report": f"report-{type(self).calls}"})]
+                self.state["_artifact_objects"] = output
+                self.state["report"] = {"report": f"report-{type(self).calls}"}
                 return output
 
         class _Critic:
@@ -138,15 +302,107 @@ class Phase5OrchestratorTest(unittest.TestCase):
         with patch("src.agent.runtime.orchestrator.ensure_plugins_registered"):
             with patch("src.agent.runtime.orchestrator.ConductorAgent", _Conductor):
                 with patch("src.agent.runtime.orchestrator.ResearcherAgent", _Researcher):
-                    with patch("src.agent.runtime.orchestrator.CriticAgent", _Critic):
-                        orchestrator = ResearchOrchestrator(cfg={"llm": {"provider": "gemini"}}, root=".")
-                        state = orchestrator.run(topic="topic")
+                    with patch("src.agent.runtime.orchestrator.ExperimenterAgent", _Experimenter):
+                        with patch("src.agent.runtime.orchestrator.AnalystAgent", _Analyst):
+                            with patch("src.agent.runtime.orchestrator.WriterAgent", _Writer):
+                                with patch("src.agent.runtime.orchestrator.CriticAgent", _Critic):
+                                    orchestrator = ResearchOrchestrator(cfg={"llm": {"provider": "gemini"}}, root=".")
+                                    state = orchestrator.run(topic="topic")
+
         self.assertEqual(state["status"], "Research OS orchestration completed")
         self.assertEqual(state["iteration"], 1)
-        self.assertIn("n2", state["report"]["report"])
+        self.assertEqual(state["report"]["report"], "report-1")
         self.assertEqual(_Conductor.calls, 2)
         self.assertEqual(_Researcher.calls, 2)
         self.assertEqual(_Critic.calls, 2)
+        self.assertEqual(_Experimenter.calls, 1)
+        self.assertEqual(_Analyst.calls, 1)
+        self.assertEqual(_Writer.calls, 1)
+
+    def test_orchestrator_pauses_after_experimenter_requests_hitl(self) -> None:
+        class _Conductor:
+            def __init__(self, *, context, state):
+                self.policy = SimpleNamespace(max_retries=1)
+
+            def plan(self, context):
+                return ["search_literature"]
+
+        class _Researcher:
+            def __init__(self, *, context, state):
+                self.state = state
+
+            def execute_plan(self, skill_ids, artifacts):
+                output = list(artifacts) + [
+                    _artifact("CorpusSnapshot", {"papers": [], "web_sources": [], "indexed_paper_ids": []}),
+                    _artifact("RelatedWorkMatrix", {"narrative": "narrative", "claims": []}),
+                    _artifact("GapMap", {"gaps": ["g1"]}),
+                ]
+                self.state["_artifact_objects"] = output
+                self.state["synthesis"] = "narrative"
+                return output
+
+        class _Experimenter:
+            def __init__(self, *, context, state):
+                self.state = state
+
+            def design(self, artifacts):
+                output = list(artifacts) + [
+                    _artifact("ExperimentPlan", {"rq_experiments": [{"research_question": "rq"}]}),
+                    _artifact(
+                        "ExperimentResults",
+                        {"status": "pending", "runs": [], "summaries": [], "validation_issues": []},
+                    ),
+                ]
+                self.state["_artifact_objects"] = output
+                self.state["experiment_plan"] = {"rq_experiments": [{"research_question": "rq"}]}
+                self.state["experiment_results"] = {
+                    "status": "pending",
+                    "runs": [],
+                    "summaries": [],
+                    "validation_issues": [],
+                }
+                self.state["await_experiment_results"] = True
+                return output
+
+        class _Analyst:
+            def __init__(self, *, context, state):
+                self.state = state
+
+            def analyze(self, artifacts):
+                raise AssertionError("Analyst should not run while awaiting experiment results")
+
+        class _Writer:
+            def __init__(self, *, context, state):
+                self.state = state
+
+            def write(self, artifacts):
+                raise AssertionError("Writer should not run while awaiting experiment results")
+
+        class _Critic:
+            def __init__(self, *, context, state):
+                self.state = state
+
+            def evaluate(self, artifacts):
+                return "pass", _artifact("CritiqueReport", {"verdict": {"action": "continue"}, "details": {}})
+
+        with patch("src.agent.runtime.orchestrator.ensure_plugins_registered"):
+            with patch("src.agent.runtime.orchestrator.ConductorAgent", _Conductor):
+                with patch("src.agent.runtime.orchestrator.ResearcherAgent", _Researcher):
+                    with patch("src.agent.runtime.orchestrator.ExperimenterAgent", _Experimenter):
+                        with patch("src.agent.runtime.orchestrator.AnalystAgent", _Analyst):
+                            with patch("src.agent.runtime.orchestrator.WriterAgent", _Writer):
+                                with patch("src.agent.runtime.orchestrator.CriticAgent", _Critic):
+                                    orchestrator = ResearchOrchestrator(cfg={"llm": {"provider": "gemini"}}, root=".")
+                                    state = orchestrator.run(topic="topic")
+
+        self.assertEqual(state["status"], "Research OS orchestration paused for HITL")
+        self.assertTrue(state["await_experiment_results"])
+        self.assertEqual(state["role_status"]["experimenter"], "completed")
+        self.assertEqual(state["role_status"]["analyst"], "waiting")
+        self.assertEqual(state["role_status"]["writer"], "waiting")
+        artifact_types = [artifact["artifact_type"] for artifact in state["artifacts"]]
+        self.assertIn("ExperimentPlan", artifact_types)
+        self.assertIn("ExperimentResults", artifact_types)
 
     def test_orchestrator_stops_when_budget_exceeded(self) -> None:
         with patch("src.agent.runtime.orchestrator.ensure_plugins_registered"):

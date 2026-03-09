@@ -24,6 +24,11 @@ class Phase5ArtifactsTest(unittest.TestCase):
             "PaperNote": {"uid": "p1", "title": "Paper", "key_findings": []},
             "RelatedWorkMatrix": {"narrative": "n", "claims": []},
             "GapMap": {"gaps": ["g1"]},
+            "ExperimentPlan": {"domain": "machine_learning", "rq_experiments": [{"research_question": "rq"}]},
+            "ExperimentResults": {"status": "validated", "runs": [{"run_id": "run-1"}], "summaries": []},
+            "ExperimentAnalysis": {"summary": "Validated one run.", "key_findings": ["f1"]},
+            "PerformanceMetrics": {"validated": True, "run_count": 1},
+            "ResearchReport": {"report": "# Report\n\ncontent"},
             "CritiqueReport": {"verdict": {"action": "continue"}, "details": {}},
         }
         for artifact_type, payload in fixtures.items():
