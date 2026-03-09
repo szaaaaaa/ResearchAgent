@@ -11,6 +11,7 @@ from src.agent.skills.wrappers import (
     get_cfg_for_stage,
     get_research_questions,
     get_search_queries,
+    get_topic,
 )
 
 SPEC = SkillSpec(
@@ -29,6 +30,7 @@ def handle(input_artifacts: list[Any], cfg: dict[str, Any]) -> SkillResult:
     base_state = get_base_state(cfg)
     payload = dict(corpus_snapshot.payload)
     state = {
+        "topic": get_topic(base_state),
         "papers": list(payload.get("papers", [])),
         "web_sources": list(payload.get("web_sources", [])),
         "analyses": list(base_state.get("analyses", [])),

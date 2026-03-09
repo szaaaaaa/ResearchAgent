@@ -341,7 +341,6 @@ def _build_claim_evidence_map(
             )
 
         a_count = sum(1 for e in evidence if e["tier"] == "A")
-        ab_count = sum(1 for e in evidence if e["tier"] in {"A", "B"})
         peer_count = sum(1 for e in evidence if e.get("peer_reviewed"))
         hq_count = sum(1 for e in evidence if e.get("high_quality"))
         arxiv_only_count = sum(1 for e in evidence if e.get("is_arxiv_only"))

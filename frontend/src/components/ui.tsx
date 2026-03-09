@@ -19,8 +19,8 @@ export const PasswordInput: React.FC<React.InputHTMLAttributes<HTMLInputElement>
       <div className="flex justify-between items-center">
         <label className="text-sm font-medium text-slate-700">{label}</label>
         {status === 'verified' && <span className="text-xs font-medium text-emerald-600 flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> 已验证</span>}
-        {status === 'present' && <span className="text-xs font-medium text-amber-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> 未验证</span>}
-        {status === 'missing' && <span className="text-xs font-medium text-rose-500 flex items-center gap-1"><XCircle className="w-3.5 h-3.5" /> 缺失</span>}
+        {status === 'present' && <span className="text-xs font-medium text-amber-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> 已存在</span>}
+        {status === 'missing' && <span className="text-xs font-medium text-rose-500 flex items-center gap-1"><XCircle className="w-3.5 h-3.5" /> 未设置</span>}
       </div>
       {description && <p className="text-xs text-slate-500">{description}</p>}
       <div className="relative">
@@ -69,7 +69,7 @@ export const Toggle: React.FC<{ label: string; description?: string; checked: bo
       onClick={() => onChange(!checked)}
       className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full focus:outline-none focus:ring-4 focus:ring-blue-500/20 transition-colors duration-300 ${checked ? 'bg-blue-600' : 'bg-slate-200'}`}
     >
-      <span className="sr-only">Toggle {label}</span>
+      <span className="sr-only">切换 {label}</span>
       <span
         aria-hidden="true"
         className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-300 ease-in-out ${checked ? 'translate-x-2.5' : '-translate-x-2.5'}`}

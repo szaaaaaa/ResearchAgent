@@ -17,12 +17,16 @@ _DEFAULT_MODEL_BY_PROVIDER = {
     "gemini": "gemini-3-pro-preview",
     "openai": "gpt-4.1-mini",
     "claude": "claude-sonnet-4-5",
+    "openrouter": "anthropic/claude-sonnet-4",
+    "siliconflow": "Qwen/Qwen2.5-7B-Instruct",
 }
 
 _PROVIDER_BY_BACKEND = {
     "gemini_chat": "gemini",
     "openai_chat": "openai",
     "claude_chat": "claude",
+    "openrouter_chat": "openrouter",
+    "siliconflow_chat": "siliconflow",
 }
 
 
@@ -47,7 +51,10 @@ def call_llm(
 
     Nodes should only call this function and never call SDKs directly.
     """
+    original_guard = cfg.get("_budget_guard")
     cfg = apply_role_llm_overrides(cfg, str(cfg.get("_active_role", "")).strip().lower() or None)
+    if original_guard is not None:
+        cfg["_budget_guard"] = original_guard
     llm_cfg = cfg.get("llm", {})
     provider_cfg = cfg.get("providers", {}).get("llm", {})
     provider_name = _resolve_provider_name(cfg)

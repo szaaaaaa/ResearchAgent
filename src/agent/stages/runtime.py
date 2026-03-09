@@ -19,6 +19,10 @@ def _resolve_provider_name(cfg: Dict[str, Any]) -> str:
         return "openai"
     if backend_name == "claude_chat":
         return "claude"
+    if backend_name == "openrouter_chat":
+        return "openrouter"
+    if backend_name == "siliconflow_chat":
+        return "siliconflow"
     return "gemini"
 
 

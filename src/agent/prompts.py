@@ -110,6 +110,36 @@ SYNTHESIZE_USER = (
 
 # ── Progress Evaluation ──────────────────────────────────────────────
 
+RETRIEVAL_CRITIC_SYSTEM = (
+    "You are a strict retrieval critic for a literature-review agent.\n\n"
+    "Decide whether the currently retrieved and analyzed sources are good enough "
+    "to proceed to synthesis.\n\n"
+    "Review principles:\n"
+    "- Judge direct relevance to the research questions, not just source count.\n"
+    "- Penalize evidence that is only loosely analogous, from the wrong task, or from a neighboring domain.\n"
+    "- Use retry_upstream when the agent should search again before synthesis.\n"
+    "- Use degrade when there is some usable basis to proceed but the report must carry explicit caveats.\n"
+    "- Use block when there is no meaningful basis to continue.\n\n"
+    "Respond in valid JSON with exactly these keys:\n"
+    '  "verdict": {\n'
+    '    "status": "pass" | "warn" | "fail",\n'
+    '    "action": "continue" | "retry_upstream" | "degrade" | "block",\n'
+    '    "issues": [string, ...],\n'
+    '    "suggested_fix": [string, ...],\n'
+    '    "confidence": float 0.0-1.0\n'
+    "  },\n"
+    '  "missing_key_topics": [string, ...],\n'
+    '  "year_coverage_gaps": [string, ...],\n'
+    '  "venue_coverage_gaps": [string, ...],\n'
+    '  "suggested_queries": [string, ...]'
+)
+
+RETRIEVAL_CRITIC_USER = (
+    "Review the current retrieval state for this topic.\n\n"
+    "Return JSON only.\n\n"
+    "{context}"
+)
+
 EVALUATE_SYSTEM = (
     "You are a research advisor evaluating whether enough evidence has "
     "been gathered to answer the research questions.\n\n"

@@ -10,6 +10,7 @@ from src.agent.skills.wrappers import (
     get_cfg_for_stage,
     get_topic,
     list_artifacts,
+    stage_result,
 )
 from src.agent.stages.synthesis import synthesize
 
@@ -40,4 +41,4 @@ def handle(input_artifacts: list[Any], cfg: dict[str, Any]) -> SkillResult:
         "_cfg": get_cfg_for_stage(cfg),
     }
     update = synthesize(state)
-    return SkillResult(success=True, output_artifacts=list(update.get("_artifacts", [])))
+    return stage_result(update, skill_id=SPEC.skill_id)

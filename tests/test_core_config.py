@@ -94,6 +94,10 @@ class CoreConfigTest(unittest.TestCase):
         self.assertFalse(out["sources"]["web"]["enabled"])
         self.assertTrue(out["sources"]["arxiv"]["enabled"])
 
+    def test_legacy_hybrid_search_backend_normalizes_to_default_search(self) -> None:
+        out = normalize_and_validate_config({"providers": {"search": {"backend": "hybrid"}}})
+        self.assertEqual(out["providers"]["search"]["backend"], "default_search")
+
     def test_empty_backend_raises(self) -> None:
         with self.assertRaises(ValueError):
             normalize_and_validate_config({"llm": {"provider": "  invalid  "}})
@@ -285,6 +289,68 @@ class CoreConfigTest(unittest.TestCase):
         self.assertEqual(out["retrieval"]["reranker_backend"], "local_crossencoder")
         self.assertEqual(out["ingest"]["text_extraction"], "auto")
         self.assertTrue(out["ingest"]["figure"]["enabled"])
+
+    def test_openrouter_provider_is_valid(self) -> None:
+        out = normalize_and_validate_config(
+            {
+                "llm": {"provider": "openrouter"},
+                "providers": {"llm": {"backend": "openrouter_chat"}},
+            }
+        )
+
+        self.assertEqual(out["llm"]["provider"], "openrouter")
+        self.assertEqual(out["llm"]["model"], "anthropic/claude-sonnet-4")
+        self.assertEqual(out["providers"]["llm"]["backend"], "openrouter_chat")
+
+    def test_openrouter_role_override_is_normalized(self) -> None:
+        out = normalize_and_validate_config(
+            {
+                "llm": {
+                    "provider": "openai",
+                    "role_models": {
+                        "researcher": {"provider": "openrouter"},
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(out["llm"]["provider"], "openai")
+        self.assertEqual(out["llm"]["role_models"]["researcher"]["provider"], "openrouter")
+        self.assertEqual(
+            out["llm"]["role_models"]["researcher"]["model"],
+            "anthropic/claude-sonnet-4",
+        )
+
+    def test_siliconflow_provider_is_valid(self) -> None:
+        out = normalize_and_validate_config(
+            {
+                "llm": {"provider": "siliconflow"},
+                "providers": {"llm": {"backend": "siliconflow_chat"}},
+            }
+        )
+
+        self.assertEqual(out["llm"]["provider"], "siliconflow")
+        self.assertEqual(out["llm"]["model"], "Qwen/Qwen2.5-7B-Instruct")
+        self.assertEqual(out["providers"]["llm"]["backend"], "siliconflow_chat")
+
+    def test_siliconflow_role_override_is_normalized(self) -> None:
+        out = normalize_and_validate_config(
+            {
+                "llm": {
+                    "provider": "openai",
+                    "role_models": {
+                        "critic": {"provider": "siliconflow"},
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(out["llm"]["provider"], "openai")
+        self.assertEqual(out["llm"]["role_models"]["critic"]["provider"], "siliconflow")
+        self.assertEqual(
+            out["llm"]["role_models"]["critic"]["model"],
+            "Qwen/Qwen2.5-7B-Instruct",
+        )
 
 
 if __name__ == "__main__":

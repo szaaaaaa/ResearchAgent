@@ -35,6 +35,26 @@ def ensure_plugins_registered() -> None:
         logger.warning("Skipping built-in Gemini provider adapter registration: %s", exc)
 
     try:
+        from src.agent.plugins.llm import openrouter_chat  # noqa: F401
+    except Exception as exc:  # pragma: no cover - optional dependency path
+        logger.warning("Skipping built-in OpenRouter LLM plugin registration: %s", exc)
+
+    try:
+        from src.agent.plugins.llm import siliconflow_chat  # noqa: F401
+    except Exception as exc:  # pragma: no cover - optional dependency path
+        logger.warning("Skipping built-in SiliconFlow LLM plugin registration: %s", exc)
+
+    try:
+        from src.agent.providers import openrouter_adapter  # noqa: F401
+    except Exception as exc:  # pragma: no cover - optional dependency path
+        logger.warning("Skipping built-in OpenRouter provider adapter registration: %s", exc)
+
+    try:
+        from src.agent.providers import siliconflow_adapter  # noqa: F401
+    except Exception as exc:  # pragma: no cover - optional dependency path
+        logger.warning("Skipping built-in SiliconFlow provider adapter registration: %s", exc)
+
+    try:
         from src.agent.plugins.search import default_search  # noqa: F401
     except Exception as exc:  # pragma: no cover - optional dependency path
         logger.warning("Skipping built-in search plugin registration: %s", exc)

@@ -1,41 +1,6 @@
 """Backward-compatible re-exports for stage nodes and shared helpers."""
 from __future__ import annotations
 
-from src.agent.core.evidence import (
-    _align_claim_to_rq,
-    _analysis_score_for_rq,
-    _build_claim_evidence_map,
-    _build_evidence_audit_log,
-    _claim_candidates,
-    _claim_has_rq_signal,
-    _claim_relevance_ratio,
-    _ensure_unique_claim_text,
-    _format_claim_map,
-    _rq_anchor_terms,
-)
-from src.agent.core.experiment_helpers import (
-    _EXPERIMENT_ELIGIBLE_DOMAINS,
-    _detect_domain_by_llm,
-    _detect_domain_by_rules,
-    _limit_experiment_groups_per_rq,
-    _normalize_experiment_results_with_llm,
-)
-from src.agent.core.query_planning import (
-    _academic_sources_enabled,
-    _compress_findings_for_context,
-    _default_sections_for_intent,
-    _expand_acronyms,
-    _expand_query_set,
-    _infer_intent,
-    _is_simple_query,
-    _is_simple_query_with_cfg,
-    _load_budget_and_scope,
-    _rewrite_queries_for_rq,
-    _route_query,
-    _source_enabled,
-    _web_sources_enabled,
-    _with_synonym_hints,
-)
 from src.agent.core.report_helpers import (
     _claim_evidence_coverage_ratio,
     _claim_mapping_section_exists,

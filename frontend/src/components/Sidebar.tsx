@@ -9,13 +9,13 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
   const tabs = [
     { id: 'run', label: '运行', icon: Play },
-    { id: 'credentials', label: '凭证与模型', icon: Key },
+    { id: 'credentials', label: '模型与凭证', icon: Key },
     { id: 'datasources', label: '数据源', icon: Database },
-    { id: 'retrieval', label: '检索与索引', icon: Search },
-    { id: 'strategy', label: '研究策略', icon: Brain },
-    { id: 'multimodal', label: '多模态摄取', icon: ImageIcon },
-    { id: 'paths', label: '路径与存储', icon: Folder },
-    { id: 'safety', label: '安全与预算', icon: Shield },
+    { id: 'retrieval', label: '检索', icon: Search },
+    { id: 'strategy', label: '策略', icon: Brain },
+    { id: 'multimodal', label: '多模态', icon: ImageIcon },
+    { id: 'paths', label: '路径', icon: Folder },
+    { id: 'safety', label: '安全', icon: Shield },
     { id: 'advanced', label: '高级', icon: Settings },
   ];
 
@@ -28,7 +28,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
           </div>
           ResearchAgent
         </h1>
-        <p className="text-xs text-slate-400 mt-2 font-mono ml-12">v1.0.0 // Config</p>
+        <p className="text-xs text-slate-400 mt-2 font-mono ml-12">v1.0.0 // 配置台</p>
       </div>
       <nav className="flex-1 px-4 space-y-1.5 overflow-y-auto pt-4">
         {tabs.map((tab) => {

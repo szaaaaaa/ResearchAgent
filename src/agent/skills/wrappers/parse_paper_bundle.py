@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.agent.skills.contract import SkillResult, SkillSpec
-from src.agent.skills.wrappers import find_artifact, get_artifact_records, get_base_state, get_cfg_for_stage
+from src.agent.skills.wrappers import find_artifact, get_artifact_records, get_base_state, get_cfg_for_stage, stage_result
 from src.agent.stages.indexing import index_sources
 
 SPEC = SkillSpec(
@@ -33,4 +33,4 @@ def handle(input_artifacts: list[Any], cfg: dict[str, Any]) -> SkillResult:
         "_cfg": get_cfg_for_stage(cfg),
     }
     update = index_sources(state)
-    return SkillResult(success=True, output_artifacts=list(update.get("_artifacts", [])))
+    return stage_result(update, skill_id=SPEC.skill_id)

@@ -1,4 +1,4 @@
-"""Trace Logger – captures per-stage artifact snapshots and reviewer verdicts.
+"""Trace Logger: captures per-stage artifact snapshots and reviewer verdicts.
 
 The trace is a list of stage entries, each containing:
 - stage name

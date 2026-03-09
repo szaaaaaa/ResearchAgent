@@ -1,4 +1,4 @@
-"""Post-report composite reviewer – runs claim extraction + citation validation.
+"""Post-report composite reviewer: runs claim extraction + citation validation.
 
 This is a single LangGraph node that sequences two reviewers that both
 operate on the final report and claim_evidence_map.

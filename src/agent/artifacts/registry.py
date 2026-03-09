@@ -41,7 +41,8 @@ class ArtifactRegistry:
         return artifacts
 
     def get_latest(self, artifact_type: str) -> Artifact | None:
-        artifacts = self.list_by_type(artifact_type)
-        if not artifacts:
+        paths = list(self.artifacts_dir.glob(f"{artifact_type}_*.json"))
+        if not paths:
             return None
-        return artifacts[-1]
+        latest_path = max(paths, key=lambda path: (path.stat().st_mtime_ns, path.name))
+        return from_json(latest_path.read_text(encoding="utf-8"))

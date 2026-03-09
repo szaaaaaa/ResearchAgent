@@ -33,6 +33,7 @@ from src.agent.core.secret_redaction import install_logging_redaction, redact_da
 from src.agent.core.state_access import sget
 
 ALL_SOURCES = ("arxiv", "google_scholar", "semantic_scholar", "web")
+ROLE_IDS = ("conductor", "researcher", "critic")
 
 
 def parse_args() -> argparse.Namespace:
@@ -144,6 +145,19 @@ def _export_artifacts(final_state: dict) -> list[dict]:
     return out
 
 
+def _role_model_summary(cfg: dict) -> dict[str, dict[str, str]]:
+    llm_cfg = cfg.get("llm", {}) if isinstance(cfg.get("llm", {}), dict) else {}
+    role_models = llm_cfg.get("role_models", {}) if isinstance(llm_cfg.get("role_models", {}), dict) else {}
+    summary: dict[str, dict[str, str]] = {}
+    for role_id in ROLE_IDS:
+        role_cfg = role_models.get(role_id, {}) if isinstance(role_models.get(role_id, {}), dict) else {}
+        summary[role_id] = {
+            "provider": str(role_cfg.get("provider") or llm_cfg.get("provider") or ""),
+            "model": str(role_cfg.get("model") or llm_cfg.get("model") or ""),
+        }
+    return summary
+
+
 def main() -> None:
     args = parse_args()
     topic_label = args.topic or f"(resume:{args.resume_run_id})"
@@ -225,7 +239,17 @@ def main() -> None:
     if args.resume_run_id:
         logger.info("Resume run id: %s", args.resume_run_id)
     logger.info("Mode: %s", args.mode)
-    logger.info("Model: %s", cfg.get("llm", {}).get("model", "gpt-4.1-mini"))
+    logger.info("Default model: %s", cfg.get("llm", {}).get("model", "gpt-4.1-mini"))
+    if args.mode == "os":
+        role_summary = _role_model_summary(cfg)
+        for role_id in ROLE_IDS:
+            role_info = role_summary.get(role_id, {})
+            logger.info(
+                "Role model [%s]: %s / %s",
+                role_id,
+                role_info.get("provider", ""),
+                role_info.get("model", ""),
+            )
     logger.info("Max iterations: %s", cfg.get("agent", {}).get("max_iterations", 3))
     logger.info("Sources: %s", ", ".join(enabled))
     logger.info("=" * 60)
@@ -354,6 +378,7 @@ def main() -> None:
         "timestamp": datetime.now().isoformat(),
         "elapsed_sec": round(elapsed, 3),
         "model": cfg.get("llm", {}).get("model"),
+        "role_models": _role_model_summary(cfg),
         "providers": cfg.get("providers", {}),
         "seed": run_seed,
         "git_commit_hash": git_commit_hash,

@@ -5,6 +5,7 @@ from typing import Any, Iterable
 from src.agent.artifacts.base import Artifact
 from src.agent.artifacts.schemas import artifact_from_record
 from src.agent.core.state_access import sget
+from src.agent.skills.contract import SkillResult
 
 
 def get_base_state(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -66,3 +67,13 @@ def get_research_questions(base_state: dict[str, Any]) -> list[str]:
 
 def get_search_queries(base_state: dict[str, Any]) -> list[str]:
     return [str(item) for item in sget(base_state, "search_queries", []) if str(item).strip()]
+
+
+def stage_result(update: dict[str, Any], *, skill_id: str) -> SkillResult:
+    artifacts = list(update.get("_artifacts", []))
+    if artifacts:
+        return SkillResult(success=True, output_artifacts=artifacts)
+
+    status = str(update.get("status", "")).strip()
+    error = status or f"{skill_id} produced no artifacts"
+    return SkillResult(success=False, output_artifacts=[], error=error)

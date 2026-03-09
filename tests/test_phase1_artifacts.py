@@ -126,10 +126,26 @@ class Phase1ArtifactsTest(unittest.TestCase):
             "research_questions": ["What methods handle drift robustly online?"],
             "search_queries": ["online drift methods"],
             "artifacts": [],
-            "_cfg": {"reviewer": {"retrieval": {"min_sources": 1, "min_unique_venues": 1}}},
+            "_cfg": {},
         }
 
-        update = review_retrieval(state)
+        update = review_retrieval(
+            state,
+            llm_call=lambda *args, **kwargs: "{}",
+            parse_json=lambda raw: {
+                "verdict": {
+                    "status": "pass",
+                    "action": "continue",
+                    "issues": [],
+                    "suggested_fix": [],
+                    "confidence": 0.9,
+                },
+                "missing_key_topics": [],
+                "year_coverage_gaps": [],
+                "venue_coverage_gaps": [],
+                "suggested_queries": [],
+            },
+        )
         artifacts = update["artifacts"]
         self.assertEqual(len(artifacts), 1)
         self.assertEqual(artifacts[0]["artifact_type"], "CritiqueReport")

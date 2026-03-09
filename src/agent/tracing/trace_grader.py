@@ -1,4 +1,4 @@
-"""Trace Grader – classifies failure types and scores pipeline runs.
+"""Trace Grader: classifies failure types and scores pipeline runs.
 
 Failure taxonomy (per update.md §10):
 - RETRIEVAL:  insufficient/low-quality sources, missing RQ coverage

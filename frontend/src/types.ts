@@ -1,5 +1,10 @@
 export type AgentRoleId = 'conductor' | 'researcher' | 'critic';
 
+export interface SelectOption {
+  value: string;
+  label: string;
+}
+
 export interface AgentModelConfig {
   provider: string;
   model: string;
@@ -9,6 +14,8 @@ export interface AgentModelConfig {
 export interface Credentials {
   OPENAI_API_KEY: string;
   GEMINI_API_KEY: string;
+  OPENROUTER_API_KEY: string;
+  SILICONFLOW_API_KEY: string;
   GOOGLE_API_KEY: string;
   SERPAPI_API_KEY: string;
   GOOGLE_CSE_API_KEY: string;
@@ -16,6 +23,15 @@ export interface Credentials {
   BING_API_KEY: string;
   GITHUB_TOKEN: string;
 }
+
+export type CredentialSource = 'missing' | 'dotenv' | 'environment' | 'both';
+
+export interface CredentialPresence {
+  present: boolean;
+  source: CredentialSource;
+}
+
+export type CredentialStatusMap = Record<keyof Credentials, CredentialPresence>;
 
 export interface ProjectConfig {
   providers: {
@@ -129,9 +145,26 @@ export interface RunOverrides {
   verbose: boolean;
 }
 
+export interface ProviderModelCatalog {
+  vendors: SelectOption[];
+  modelsByVendor: Record<string, SelectOption[]>;
+  loaded: boolean;
+  vendorCount: number;
+  modelCount: number;
+  missing_api_key?: boolean;
+  error?: string;
+}
+
 export interface AppState {
   credentials: Credentials;
+  credentialStatus: CredentialStatusMap;
   projectConfig: ProjectConfig;
   runOverrides: RunOverrides;
+  runLogs: string[];
+  isRunInProgress: boolean;
+  openaiCatalog: ProviderModelCatalog;
+  geminiCatalog: ProviderModelCatalog;
+  openrouterCatalog: ProviderModelCatalog;
+  siliconflowCatalog: ProviderModelCatalog;
   isAdvancedMode: boolean;
 }

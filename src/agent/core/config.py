@@ -130,16 +130,22 @@ _LLM_PROVIDER_BY_BACKEND = {
     "gemini_chat": "gemini",
     "openai_chat": "openai",
     "claude_chat": "claude",
+    "openrouter_chat": "openrouter",
+    "siliconflow_chat": "siliconflow",
 }
 _LLM_BACKEND_BY_PROVIDER = {
     "gemini": "gemini_chat",
     "openai": "openai_chat",
     "claude": "claude_chat",
+    "openrouter": "openrouter_chat",
+    "siliconflow": "siliconflow_chat",
 }
 _DEFAULT_LLM_MODEL_BY_PROVIDER = {
     "gemini": "gemini-3-pro-preview",
     "openai": "gpt-4.1-mini",
     "claude": "claude-sonnet-4-5",
+    "openrouter": "anthropic/claude-sonnet-4",
+    "siliconflow": "Qwen/Qwen2.5-7B-Instruct",
 }
 _ROLE_LLM_IDS = ("conductor", "researcher", "critic")
 
@@ -221,8 +227,8 @@ def normalize_and_validate_config(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
         out.setdefault("providers", {}).setdefault("llm", {}).get("backend", "")
     ).strip().lower()
     llm_provider = configured_provider or _LLM_PROVIDER_BY_BACKEND.get(configured_backend, "gemini")
-    if llm_provider not in {"gemini", "openai", "claude"}:
-        raise ValueError("llm.provider must be one of: gemini, openai, claude")
+    if llm_provider not in {"gemini", "openai", "claude", "openrouter", "siliconflow"}:
+        raise ValueError("llm.provider must be one of: gemini, openai, claude, openrouter, siliconflow")
     llm_cfg["provider"] = llm_provider
     llm_cfg.setdefault("model", _DEFAULT_LLM_MODEL_BY_PROVIDER[llm_provider])
     llm_cfg.setdefault("temperature", 0.3)
@@ -236,7 +242,7 @@ def normalize_and_validate_config(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
             role_cfg = {}
             role_models_cfg[role_id] = role_cfg
         provider_override = str(role_cfg.get("provider", "")).strip().lower()
-        if provider_override and provider_override not in {"gemini", "openai", "claude"}:
+        if provider_override and provider_override not in {"gemini", "openai", "claude", "openrouter", "siliconflow"}:
             provider_override = ""
         role_cfg["provider"] = provider_override
         model_override = str(role_cfg.get("model", "")).strip()
@@ -260,7 +266,10 @@ def normalize_and_validate_config(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
     providers_llm_cfg["retry_backoff_sec"] = float(providers_llm_cfg.get("retry_backoff_sec", 1.0))
 
     providers_search_cfg = providers_cfg.setdefault("search", {})
-    providers_search_cfg["backend"] = str(providers_search_cfg.get("backend", "default_search")).strip().lower()
+    search_backend = str(providers_search_cfg.get("backend", "default_search")).strip().lower()
+    if search_backend == "hybrid":
+        search_backend = "default_search"
+    providers_search_cfg["backend"] = search_backend
     if not providers_search_cfg["backend"]:
         raise ValueError("providers.search.backend cannot be empty")
     providers_search_cfg["academic_order"] = _normalized_order(

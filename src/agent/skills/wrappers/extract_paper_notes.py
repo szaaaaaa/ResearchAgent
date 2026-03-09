@@ -9,6 +9,7 @@ from src.agent.skills.wrappers import (
     get_base_state,
     get_cfg_for_stage,
     get_topic,
+    stage_result,
 )
 from src.agent.stages.analysis import analyze_sources
 
@@ -37,4 +38,4 @@ def handle(input_artifacts: list[Any], cfg: dict[str, Any]) -> SkillResult:
         "_cfg": get_cfg_for_stage(cfg),
     }
     update = analyze_sources(state)
-    return SkillResult(success=True, output_artifacts=list(update.get("_artifacts", [])))
+    return stage_result(update, skill_id=SPEC.skill_id)

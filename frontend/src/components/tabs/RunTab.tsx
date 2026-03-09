@@ -1,86 +1,97 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Play, Terminal } from 'lucide-react';
-import { API_BASE, useAppContext } from '../../store';
-import { MODEL_OPTIONS_BY_PROVIDER } from '../../modelOptions';
+import { useAppContext } from '../../store';
+import { ProviderModelCatalog } from '../../types';
+import {
+  getModelOptionsForProvider,
+  getModelsForProviderVendor,
+  getVendorFromProviderModel,
+  getVendorOptionsForProvider,
+  isVendorScopedProvider,
+} from '../../modelOptions';
 import { Card, Input, Select, Toggle } from '../ui';
 
+function getCatalogStatus(provider: string, catalog?: ProviderModelCatalog): string | null {
+  const providerLabel = (
+    {
+      openai: 'OpenAI',
+      gemini: 'Gemini',
+      openrouter: 'OpenRouter',
+      siliconflow: 'SiliconFlow',
+    } as const
+  )[provider as 'openai' | 'gemini' | 'openrouter' | 'siliconflow'];
+  if (!providerLabel) {
+    return null;
+  }
+  if (!catalog || !catalog.loaded) {
+    return `${providerLabel} 模型目录加载中。`;
+  }
+  if (catalog.missing_api_key) {
+    return `${providerLabel} 未检测到 API Key，暂时无法拉取实时模型目录。`;
+  }
+  if (catalog.error) {
+    return `${providerLabel} 模型目录拉取失败：${catalog.error}`;
+  }
+  if (catalog.modelCount === 0) {
+    return `${providerLabel} 当前没有返回可用模型。`;
+  }
+  return `${providerLabel} 已加载 ${catalog.vendorCount} 个厂商，${catalog.modelCount} 个模型。`;
+}
+
 export const RunTab: React.FC = () => {
-  const { state, updateRunOverrides } = useAppContext();
-  const { runOverrides, credentials, projectConfig } = state;
-  const [logs, setLogs] = useState<string[]>(['> 就绪。等待输入主题。']);
-  const [isRunning, setIsRunning] = useState(false);
-  const globalModelOptions = MODEL_OPTIONS_BY_PROVIDER[projectConfig.llm.provider] ?? [];
+  const { state, updateRunOverrides, startRun } = useAppContext();
+  const {
+    runOverrides,
+    runLogs,
+    isRunInProgress,
+    openaiCatalog,
+    geminiCatalog,
+    openrouterCatalog,
+    siliconflowCatalog,
+    projectConfig,
+  } = state;
+  const catalogs = { openaiCatalog, geminiCatalog, openrouterCatalog, siliconflowCatalog };
 
-  const handleRun = async () => {
-    setIsRunning(true);
-    setLogs([
-      '> 开始初始化 Agent...',
-      runOverrides.topic ? `> 主题: ${runOverrides.topic}` : '> 续跑模式',
-    ]);
-
-    try {
-      const response = await fetch(`${API_BASE}/api/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          runOverrides,
-          credentials,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-
-      if (!reader) {
-        setLogs((prev) => [...prev, '> 没有收到可读取的输出流。']);
-        return;
-      }
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-        const text = decoder.decode(value, { stream: true });
-        if (text) {
-          setLogs((prev) => [...prev, text]);
-        }
-      }
-    } catch (error) {
-      setLogs((prev) => [...prev, `> 运行出错: ${String(error)}`]);
-    } finally {
-      setIsRunning(false);
-    }
-  };
+  const provider = projectConfig.llm.provider;
+  const globalModelOptions = getModelOptionsForProvider(provider, catalogs);
+  const runVendor = getVendorFromProviderModel(provider, runOverrides.model || projectConfig.llm.model, catalogs);
+  const runVendorOptions = getVendorOptionsForProvider(provider, catalogs);
+  const runVendorModels = getModelsForProviderVendor(provider, runVendor, catalogs);
+  const activeCatalog =
+    provider === 'openai'
+      ? openaiCatalog
+      : provider === 'gemini'
+        ? geminiCatalog
+        : provider === 'openrouter'
+          ? openrouterCatalog
+          : provider === 'siliconflow'
+            ? siliconflowCatalog
+            : undefined;
 
   return (
     <div className="space-y-8">
       <div className="pb-6 border-b border-slate-200/60 flex items-center justify-between">
         <div>
           <h2 className="text-3xl font-bold text-slate-800 tracking-tight">运行</h2>
-          <p className="text-sm text-slate-500 mt-2">配置运行参数并实时查看 Agent 终端输出。</p>
+          <p className="text-sm text-slate-500 mt-2">设置本次运行参数，并直接启动 agent。</p>
         </div>
         <button
-          onClick={handleRun}
-          disabled={isRunning}
+          onClick={() => void startRun()}
+          disabled={isRunInProgress}
           className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white px-6 py-2.5 rounded-xl text-sm font-medium flex items-center gap-2 transition-all shadow-sm shadow-blue-600/20"
         >
           <Play className="w-4 h-4 fill-current" />
-          {isRunning ? '运行中...' : '开始运行'}
+          {isRunInProgress ? '运行中...' : '开始运行'}
         </button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-8">
-          <Card title="运行主题" description="设置本次研究任务的主题和基础运行参数。">
+          <Card title="运行配置" description="设置主题、模式、语言和本次运行的模型覆盖。">
             <Input
-              label="主题 (Topic)"
-              description="输入要生成综述报告的研究主题。"
-              placeholder="例如：多模态大模型在医学影像分析中的应用综述"
+              label="研究主题"
+              description="输入研究问题、综述主题或探索方向。"
+              placeholder="例如：医疗影像多模态基础模型综述"
               value={runOverrides.topic}
               onChange={(e) => updateRunOverrides({ topic: e.target.value })}
             />
@@ -96,25 +107,43 @@ export const RunTab: React.FC = () => {
                 onChange={(e) => updateRunOverrides({ mode: e.target.value })}
               />
               <Select
-                label="语言"
+                label="输出语言"
                 options={[
-                  { value: 'zh', label: '中文 (Chinese)' },
-                  { value: 'en', label: '英文 (English)' },
+                  { value: 'zh', label: '中文' },
+                  { value: 'en', label: 'English' },
                 ]}
                 value={runOverrides.language}
                 onChange={(e) => updateRunOverrides({ language: e.target.value })}
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-6">
+            {getCatalogStatus(provider, activeCatalog) && (
+              <p className="text-xs text-slate-500 -mt-2">{getCatalogStatus(provider, activeCatalog)}</p>
+            )}
+
+            <div className={`grid gap-6 ${isVendorScopedProvider(provider) ? 'grid-cols-3' : 'grid-cols-2'}`}>
+              {isVendorScopedProvider(provider) && (
+                <Select
+                  label="模型厂商"
+                  options={runVendorOptions}
+                  value={runVendor}
+                  disabled={runVendorOptions.length === 0}
+                  onChange={(e) => {
+                    const vendor = e.target.value;
+                    const nextModel = getModelsForProviderVendor(provider, vendor, catalogs)[0]?.value ?? '';
+                    updateRunOverrides({ model: nextModel });
+                  }}
+                />
+              )}
               <Select
-                label="默认模型"
-                options={globalModelOptions}
+                label="具体模型"
+                options={isVendorScopedProvider(provider) ? runVendorModels : globalModelOptions}
                 value={runOverrides.model}
+                disabled={(isVendorScopedProvider(provider) ? runVendorModels : globalModelOptions).length === 0}
                 onChange={(e) => updateRunOverrides({ model: e.target.value })}
               />
               <Input
-                label="最大迭代次数 (Max Iterations)"
+                label="最大迭代轮数"
                 type="number"
                 min={1}
                 max={20}
@@ -124,7 +153,7 @@ export const RunTab: React.FC = () => {
             </div>
 
             <Input
-              label="每轮论文数 (Papers per Query)"
+              label="每次查询抓取论文数"
               type="number"
               min={1}
               max={50}
@@ -133,10 +162,10 @@ export const RunTab: React.FC = () => {
             />
           </Card>
 
-          <Card title="续跑设置" description="如需从已有 run 继续，可填写 run ID。">
+          <Card title="断点续跑" description="如果已有 run id，可以从检查点继续执行。">
             <Input
-              label="续跑 Run ID (Resume Run ID)"
-              description="留空表示启动一次新的研究运行。"
+              label="Resume Run ID"
+              description="例如：run_20260308_153000"
               placeholder="run_1234567890"
               value={runOverrides.resume_run_id}
               onChange={(e) => updateRunOverrides({ resume_run_id: e.target.value })}
@@ -146,9 +175,9 @@ export const RunTab: React.FC = () => {
         </div>
 
         <div className="space-y-8">
-          <Card title="运行输出">
+          <Card title="输出与开关">
             <Input
-              label="输出目录 (Output Dir)"
+              label="输出目录"
               value={runOverrides.output_dir}
               onChange={(e) => updateRunOverrides({ output_dir: e.target.value })}
               className="font-mono"
@@ -161,12 +190,12 @@ export const RunTab: React.FC = () => {
                 onChange={(checked) => updateRunOverrides({ no_web: checked })}
               />
               <Toggle
-                label="禁用抓取"
+                label="禁用网页抓取"
                 checked={runOverrides.no_scrape}
                 onChange={(checked) => updateRunOverrides({ no_scrape: checked })}
               />
               <Toggle
-                label="详细日志"
+                label="输出详细日志"
                 checked={runOverrides.verbose}
                 onChange={(checked) => updateRunOverrides({ verbose: checked })}
               />
@@ -179,7 +208,7 @@ export const RunTab: React.FC = () => {
               <span className="text-xs font-mono uppercase tracking-wider font-semibold">Terminal</span>
             </div>
             <div className="font-mono text-sm text-emerald-400 whitespace-pre-wrap">
-              {logs.map((log, index) => (
+              {runLogs.map((log, index) => (
                 <span key={index}>{log}</span>
               ))}
             </div>

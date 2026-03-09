@@ -1,6 +1,6 @@
 providers:
   llm:
-    backend: openai_chat
+    backend: gemini_chat
     retries: 3
     retry_backoff_sec: 2
     gemini_api_key_env: GEMINI_API_KEY
@@ -21,29 +21,29 @@ providers:
       half_open_probe_after_sec: 30
       sqlite_path: ${project.data_dir}/circuit_breaker.db
 llm:
-  provider: openai
+  provider: gemini
   model: gpt-4o
   temperature: 0.2
   role_models:
     conductor:
-      provider: gemini
-      model: gemini-3.1-pro-preview
+      provider: openai
+      model: gpt-4o
     researcher:
       provider: gemini
-      model: deep-research-pro-preview-12-2025
+      model: gemini-1.5-pro
     critic:
-      provider: gemini
-      model: gemini-3.1-pro-preview
+      provider: openai
+      model: gpt-4o
 retrieval:
   openai_api_key_env: OPENAI_API_KEY
-  runtime_mode: lite
+  runtime_mode: standard
   embedding_backend: openai_embedding
   embedding_model: text-embedding-3-small
   remote_embedding_model: text-embedding-3-small
   hybrid: true
   top_k: 10
   candidate_k: 50
-  reranker_backend: none
+  reranker_backend: local_crossencoder
   reranker_model: cross-encoder/ms-marco-MiniLM-L-6-v2
 sources:
   arxiv:
@@ -133,7 +133,7 @@ agent:
     backend: sqlite
     sqlite_path: ${project.data_dir}/checkpoints.db
 ingest:
-  text_extraction: pymupdf_only
+  text_extraction: auto
   latex:
     download_source: false
     source_dir: ${project.data_dir}/latex
@@ -142,7 +142,7 @@ ingest:
     image_dir: ${project.data_dir}/figures
     min_width: 200
     min_height: 200
-    vlm_model: deep-research-pro-preview-12-2025
+    vlm_model: gemini-1.5-flash
     vlm_temperature: 0.1
     validation_min_entity_match: 1
 fetch:

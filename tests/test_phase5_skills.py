@@ -45,12 +45,29 @@ class Phase5SkillsTest(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual([artifact.artifact_type for artifact in result.output_artifacts], ["CorpusSnapshot"])
 
+    def test_search_literature_wrapper_surfaces_stage_failure(self) -> None:
+        search_plan_artifact = _artifact(
+            "SearchPlan",
+            {"research_questions": ["rq"], "search_queries": ["q"], "query_routes": {"q": {}}},
+        )
+        with patch.object(search_literature, "fetch_sources", return_value={"status": "Fetch failed: missing api key"}):
+            result = search_literature.handle([search_plan_artifact], {"_skill_state": {"topic": "t"}})
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "Fetch failed: missing api key")
+
     def test_parse_paper_bundle_wrapper_invokes_stage(self) -> None:
         corpus_snapshot = _artifact("CorpusSnapshot", {"papers": [], "web_sources": [], "indexed_paper_ids": []})
         with patch.object(parse_paper_bundle, "index_sources", return_value={"_artifacts": [corpus_snapshot]}):
             result = parse_paper_bundle.handle([corpus_snapshot], {})
         self.assertTrue(result.success)
         self.assertEqual([artifact.artifact_type for artifact in result.output_artifacts], ["CorpusSnapshot"])
+
+    def test_parse_paper_bundle_wrapper_surfaces_stage_failure(self) -> None:
+        corpus_snapshot = _artifact("CorpusSnapshot", {"papers": [], "web_sources": [], "indexed_paper_ids": []})
+        with patch.object(parse_paper_bundle, "index_sources", return_value={"status": "Index failed: chroma unavailable"}):
+            result = parse_paper_bundle.handle([corpus_snapshot], {})
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "Index failed: chroma unavailable")
 
     def test_extract_paper_notes_wrapper_invokes_stage(self) -> None:
         corpus_snapshot = _artifact("CorpusSnapshot", {"papers": [], "web_sources": [], "indexed_paper_ids": []})
@@ -79,10 +96,20 @@ class Phase5SkillsTest(unittest.TestCase):
     def test_critique_retrieval_wrapper_invokes_reviewer(self) -> None:
         corpus_snapshot = _artifact("CorpusSnapshot", {"papers": [], "web_sources": [], "indexed_paper_ids": []})
         critique_report = _artifact("CritiqueReport", {"verdict": {"action": "continue"}, "details": {}})
-        with patch.object(critique_retrieval, "review_retrieval", return_value={"_artifacts": [critique_report]}):
-            result = critique_retrieval.handle([corpus_snapshot], {"_skill_state": {"research_questions": [], "search_queries": []}})
+        captured: dict[str, object] = {}
+
+        def _fake_review(state):
+            captured["topic"] = state.get("topic")
+            return {"_artifacts": [critique_report]}
+
+        with patch.object(critique_retrieval, "review_retrieval", side_effect=_fake_review):
+            result = critique_retrieval.handle(
+                [corpus_snapshot],
+                {"_skill_state": {"topic": "t", "research_questions": [], "search_queries": []}},
+            )
         self.assertTrue(result.success)
         self.assertEqual([artifact.artifact_type for artifact in result.output_artifacts], ["CritiqueReport"])
+        self.assertEqual(captured["topic"], "t")
 
     def test_skill_registry_validates_input_artifact_types(self) -> None:
         registry = SkillRegistry()

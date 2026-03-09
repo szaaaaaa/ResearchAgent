@@ -17,6 +17,20 @@ def _resolve_indexing_backend(cfg: Dict[str, Any]):
     return backend_module
 
 
+def index_pdf_documents(**kwargs):
+    backend_module = kwargs.pop("backend_module")
+    return backend_module.index_pdf_documents(**kwargs)
+
+
+def chunk_text(**kwargs):
+    backend_module = kwargs.pop("backend_module")
+    return backend_module.chunk_text(
+        kwargs.get("text", ""),
+        chunk_size=kwargs["chunk_size"],
+        overlap=kwargs["overlap"],
+    )
+
+
 class IndexExecutor:
     def supported_actions(self) -> List[str]:
         return [
@@ -49,7 +63,8 @@ class IndexExecutor:
             if action == "index_pdf_documents":
                 pdf_paths = [Path(p) for p in params.get("pdfs", [])]
                 retrieval_cfg = cfg.get("retrieval", {})
-                result = backend_module.index_pdf_documents(
+                result = index_pdf_documents(
+                    backend_module=backend_module,
                     persist_dir=str(params["persist_dir"]),
                     collection_name=str(params["collection_name"]),
                     pdfs=pdf_paths,
@@ -71,8 +86,9 @@ class IndexExecutor:
                 return TaskResult(success=True, data=dict(result))
 
             if action == "chunk_text":
-                chunks = backend_module.chunk_text(
-                    str(params.get("text", "")),
+                chunks = chunk_text(
+                    backend_module=backend_module,
+                    text=str(params.get("text", "")),
                     chunk_size=int(params["chunk_size"]),
                     overlap=int(params["overlap"]),
                 )
