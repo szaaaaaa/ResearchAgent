@@ -12,11 +12,23 @@ from src.agent.core.config import normalize_and_validate_config
 from src.agent.core.events import emit_event
 from src.agent.core.schemas import ResearchState
 from src.agent.plugins.bootstrap import ensure_plugins_registered
-from src.agent.roles import ConductorAgent, CriticAgent, ResearcherAgent
+from src.agent.roles import (
+    AnalystAgent,
+    ConductorAgent,
+    CriticAgent,
+    ExperimenterAgent,
+    ResearcherAgent,
+    WriterAgent,
+)
 from src.agent.runtime.context import RunContext
 from src.agent.runtime.policy import budget_guard_allows, can_retry, hitl_gate
 
 logger = logging.getLogger(__name__)
+_ROLE_ORDER = ("conductor", "researcher", "experimenter", "analyst", "writer", "critic")
+
+
+def _role_status_template() -> dict[str, str]:
+    return {role_id: "pending" for role_id in _ROLE_ORDER}
 
 
 def _build_initial_state(*, topic: str, cfg: dict[str, Any], run_id: str, max_iterations: int) -> ResearchState:
@@ -57,11 +69,15 @@ def _build_initial_state(*, topic: str, cfg: dict[str, Any], run_id: str, max_it
         "synthesis": "",
         "experiment_plan": {},
         "experiment_results": {},
+        "result_analysis": {},
+        "performance_metrics": {},
         "report_critic": {},
         "repair_attempted": False,
         "acceptance_metrics": {},
         "_academic_queries": [],
         "_web_queries": [],
+        "active_role": "",
+        "role_status": _role_status_template(),
     }
 
 
@@ -103,6 +119,17 @@ def _dedupe_keep_order(values: list[str]) -> list[str]:
         seen.add(key)
         out.append(_clean_line(value))
     return out
+
+
+def _set_role_status(state: ResearchState, role_id: str, status: str) -> None:
+    role_status = state.setdefault("role_status", {})
+    if isinstance(role_status, dict):
+        role_status[role_id] = status
+    state["active_role"] = role_id
+
+
+def _sync_artifact_records(state: ResearchState) -> None:
+    state["artifacts"] = [artifact.to_record() for artifact in state.get("_artifact_objects", [])]
 
 
 def _render_stage_report(state: ResearchState, *, terminal_label: str, critic_decision: str) -> str:
@@ -224,6 +251,52 @@ class ResearchOrchestrator:
             artifact_registry=ArtifactRegistry.for_runtime(cfg=self.cfg, run_id=run_id),
         )
 
+    def _create_agents(self, state: ResearchState) -> dict[str, Any]:
+        return {
+            "conductor": ConductorAgent(context=self.context, state=state),
+            "researcher": ResearcherAgent(context=self.context, state=state),
+            "experimenter": ExperimenterAgent(context=self.context, state=state),
+            "analyst": AnalystAgent(context=self.context, state=state),
+            "writer": WriterAgent(context=self.context, state=state),
+            "critic": CriticAgent(context=self.context, state=state),
+        }
+
+    def _run_post_research_pipeline(self, *, state: ResearchState, agents: dict[str, Any]) -> list[Any]:
+        artifacts = list(state.get("_artifact_objects", []))
+
+        experimenter = agents["experimenter"]
+        analyst = agents["analyst"]
+        writer = agents["writer"]
+
+        _set_role_status(state, "experimenter", "running")
+        artifacts = experimenter.design(artifacts)
+        _set_role_status(state, "experimenter", "completed")
+        _sync_artifact_records(state)
+
+        if hitl_gate(state):
+            _set_role_status(state, "analyst", "waiting")
+            _set_role_status(state, "writer", "waiting")
+            return artifacts
+
+        experiment_results = state.get("experiment_results", {})
+        results_status = ""
+        if isinstance(experiment_results, dict):
+            results_status = str(experiment_results.get("status", "")).strip().lower()
+
+        if results_status == "validated":
+            _set_role_status(state, "analyst", "running")
+            artifacts = analyst.analyze(artifacts)
+            _set_role_status(state, "analyst", "completed")
+            _sync_artifact_records(state)
+        else:
+            _set_role_status(state, "analyst", "skipped")
+
+        _set_role_status(state, "writer", "running")
+        artifacts = writer.write(artifacts)
+        _set_role_status(state, "writer", "completed")
+        _sync_artifact_records(state)
+        return artifacts
+
     def run(self, *, topic: str) -> ResearchState:
         ensure_plugins_registered()
         self.context.topic = topic
@@ -242,18 +315,25 @@ class ResearchOrchestrator:
                 state["error"] = reason
                 return state
 
-            conductor = ConductorAgent(context=self.context, state=state)
-            researcher = ResearcherAgent(context=self.context, state=state)
-            critic = CriticAgent(context=self.context, state=state)
+            agents = self._create_agents(state)
+            conductor = agents["conductor"]
+            researcher = agents["researcher"]
+            critic = agents["critic"]
 
+            _set_role_status(state, "conductor", "running")
             planned_skills = conductor.plan(self.context)
+            _set_role_status(state, "conductor", "completed")
             logger.info("[ResearchOrchestrator] Planned skills: %s", ", ".join(planned_skills))
 
             artifacts = list(state.get("_artifact_objects", []))
+            _set_role_status(state, "researcher", "running")
             artifacts = researcher.execute_plan(planned_skills, artifacts)
+            _set_role_status(state, "researcher", "completed")
+            _set_role_status(state, "critic", "running")
             decision, critique_report = critic.evaluate(artifacts)
+            _set_role_status(state, "critic", decision)
             state["iteration"] = self.context.iteration
-            state["artifacts"] = [artifact.to_record() for artifact in state.get("_artifact_objects", [])]
+            _sync_artifact_records(state)
 
             emit_event(
                 self.cfg,
@@ -267,6 +347,10 @@ class ResearchOrchestrator:
             )
 
             if decision == "pass":
+                self._run_post_research_pipeline(state=state, agents=agents)
+                if hitl_gate(state):
+                    state["status"] = "Research OS orchestration paused for HITL"
+                    return state
                 state["status"] = "Research OS orchestration completed"
                 report_ns = state.setdefault("report", {})
                 if isinstance(report_ns, dict) and not str(report_ns.get("report", "")).strip():
