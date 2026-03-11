@@ -19,7 +19,7 @@ from src.agent.core.report_helpers import (
 )
 from src.agent.core.schemas import ResearchState
 from src.agent.core.source_ranking import _uid_to_resolvable_url as _default_uid_to_resolvable_url
-from src.agent.core.state_access import to_namespaced_update, with_flattened_legacy_view
+from src.agent.core.state_access import to_namespaced_update
 from src.agent.prompts import EXPERIMENT_PLAN_SYSTEM, EXPERIMENT_PLAN_USER
 from src.agent.stages.runtime import llm_call as _runtime_llm_call, parse_json as _runtime_parse_json
 
@@ -43,7 +43,7 @@ def recommend_experiments(
     eligible_domains: set[str] | None = None,
 ) -> Dict[str, Any]:
     """Generate experiment recommendations for eligible research domains."""
-    state_view = state_view or with_flattened_legacy_view
+    state_view = state_view or (lambda current_state: current_state)
     get_cfg = get_cfg or (lambda current_state: current_state.get("_cfg", {}))
     ns = ns or to_namespaced_update
     llm_call = llm_call or _runtime_llm_call
@@ -98,31 +98,19 @@ def recommend_experiments(
     domain = domain_info["domain"]
     subfield = domain_info["subfield"]
     task_type = domain_info["task_type"]
-    used_domain_fallback = False
-
     if domain not in eligible_domains:
-        if rule_hit:
-            logger.info(
-                "[recommend_experiments] LLM domain '%s' not eligible; fallback to machine_learning by rules.",
-                domain,
-            )
-            domain = "machine_learning"
-            subfield = subfield or "general"
-            task_type = task_type or "research"
-            used_domain_fallback = True
-        else:
-            logger.info(
-                "[recommend_experiments] LLM domain detection '%s' not eligible, skipping.",
-                domain,
-            )
-            return ns(
-                {
-                    "experiment_plan": {},
-                    "experiment_results": {},
-                    "await_experiment_results": False,
-                    "status": f"Experiment recommendation skipped (LLM classified as '{domain}')",
-                }
-            )
+        logger.info(
+            "[recommend_experiments] LLM domain detection '%s' not eligible, skipping.",
+            domain,
+        )
+        return ns(
+            {
+                "experiment_plan": {},
+                "experiment_results": {},
+                "await_experiment_results": False,
+                "status": f"Experiment recommendation skipped (LLM classified as '{domain}')",
+            }
+        )
 
     model = cfg.get("llm", {}).get("model", "gpt-4.1-mini")
     temperature = cfg.get("llm", {}).get("temperature", 0.3)
@@ -170,18 +158,11 @@ def recommend_experiments(
 
     try:
         parsed = parse_json(raw)
-        plan = parsed if isinstance(parsed, dict) else {}
-    except json.JSONDecodeError:
-        logger.warning("[recommend_experiments] Failed to parse experiment plan JSON")
-        plan = {}
-
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("recommend_experiments returned invalid JSON") from exc
+    plan = parsed if isinstance(parsed, dict) else {}
     if not plan:
-        plan = {
-            "domain": domain,
-            "subfield": subfield,
-            "task_type": task_type,
-            "rq_experiments": [],
-        }
+        raise RuntimeError("recommend_experiments returned empty plan")
     plan.setdefault("domain", domain)
     plan.setdefault("subfield", subfield)
     plan.setdefault("task_type", task_type)
@@ -217,7 +198,6 @@ def recommend_experiments(
                 f"{len(plan.get('rq_experiments', []))} experiment groups, "
                 f"{len(validation_issues)} validation issues"
                 + (f", trimmed={dropped_count}" if dropped_count else "")
-                + (", domain_fallback=rules" if used_domain_fallback else "")
                 + ("; awaiting human experiment results" if require_human_results else "")
             ),
         }
@@ -234,7 +214,7 @@ def ingest_experiment_results(
     validate_experiment_results: Callable[[Dict[str, Any], List[str]], List[str]] | None = None,
 ) -> Dict[str, Any]:
     """Validate and ingest human-submitted experiment results."""
-    state_view = state_view or with_flattened_legacy_view
+    state_view = state_view or (lambda current_state: current_state)
     get_cfg = get_cfg or (lambda current_state: current_state.get("_cfg", {}))
     ns = ns or to_namespaced_update
     normalize_experiment_results_with_llm = normalize_experiment_results_with_llm or (

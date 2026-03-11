@@ -27,7 +27,7 @@ from src.agent.core.report_helpers import (
     _strip_outer_markdown_fence,
 )
 from src.agent.core.schemas import ResearchState
-from src.agent.core.state_access import to_namespaced_update, with_flattened_legacy_view
+from src.agent.core.state_access import to_namespaced_update
 from src.agent.core.source_ranking import (
     _dedupe_and_rank_analyses,
     _has_traceable_source,
@@ -70,10 +70,7 @@ def _default_repair_report_once(
         + report
         + "\n\nReturn a repaired Markdown report only."
     )
-    try:
-        return _runtime_llm_call(repair_system, repair_user, cfg=cfg, model=model, temperature=temperature)
-    except Exception:
-        return report
+    return _runtime_llm_call(repair_system, repair_user, cfg=cfg, model=model, temperature=temperature)
 
 
 def generate_report(
@@ -89,7 +86,7 @@ def generate_report(
     compute_acceptance_metrics: Callable[..., Dict[str, Any]] | None = None,
 ) -> Dict[str, Any]:
     """Produce the final markdown research report."""
-    state_view = state_view or with_flattened_legacy_view
+    state_view = state_view or (lambda current_state: current_state)
     get_cfg = get_cfg or (lambda current_state: current_state.get("_cfg", {}))
     load_budget_and_scope = load_budget_and_scope or _default_load_budget_and_scope
     ns = ns or to_namespaced_update

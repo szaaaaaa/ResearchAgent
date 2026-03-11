@@ -16,7 +16,7 @@ from src.agent.core.query_planning import (
     _web_sources_enabled,
 )
 from src.agent.core.schemas import ResearchState
-from src.agent.core.state_access import to_namespaced_update, with_flattened_legacy_view
+from src.agent.core.state_access import to_namespaced_update
 from src.agent.prompts import (
     PLAN_RESEARCH_REFINE_CONTEXT,
     PLAN_RESEARCH_SYSTEM,
@@ -43,7 +43,7 @@ def plan_research(
     route_query: Callable[[str, Dict[str, Any]], Dict[str, Any]] | None = None,
 ) -> Dict[str, Any]:
     """Decompose the topic into research questions and routed search queries."""
-    state_view = state_view or with_flattened_legacy_view
+    state_view = state_view or (lambda current_state: current_state)
     get_cfg = get_cfg or (lambda current_state: current_state.get("_cfg", {}))
     load_budget_and_scope = load_budget_and_scope or _load_budget_and_scope
     ns = ns or to_namespaced_update
@@ -95,20 +95,15 @@ def plan_research(
 
     try:
         result = parse_json(raw)
-    except json.JSONDecodeError:
-        logger.warning("Failed to parse plan_research JSON, using fallback")
-        result = {
-            "research_questions": [f"What are the key developments in {topic}?"],
-            "academic_queries": [topic],
-            "web_queries": [topic],
-        }
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("plan_research returned invalid JSON") from exc
 
     max_q = int(cfg.get("agent", {}).get("max_queries_per_iteration", 3))
     seed_academic_queries = result.get("academic_queries", result.get("search_queries", [topic]))[:max_q]
     seed_web_queries = result.get("web_queries", [topic])[:max_q]
     research_questions = result.get("research_questions", [])[: max(1, budget["max_research_questions"])]
     if not research_questions:
-        research_questions = [f"What are the key developments in {topic}?"]
+        raise RuntimeError("plan_research returned no research questions")
 
     focus_rqs = state.get("_focus_research_questions", [])
     rewrite_targets = (

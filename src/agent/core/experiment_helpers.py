@@ -75,8 +75,8 @@ def _detect_domain_by_llm(
     )
     try:
         result = parse_json(raw)
-    except json.JSONDecodeError:
-        result = {"domain": "other", "subfield": "", "task_type": ""}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Domain detector returned invalid JSON") from exc
     return {
         "domain": str(result.get("domain", "other")).strip().lower(),
         "subfield": str(result.get("subfield", "")).strip(),

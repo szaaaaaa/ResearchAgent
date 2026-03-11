@@ -14,7 +14,7 @@ from src.agent.core.config import (
 from src.agent.core.executor import TaskRequest
 from src.agent.core.schemas import ResearchState
 from src.agent.core.source_ranking import _is_topic_relevant as _default_is_topic_relevant
-from src.agent.core.state_access import to_namespaced_update, with_flattened_legacy_view
+from src.agent.core.state_access import to_namespaced_update
 from src.agent.core.topic_filter import (
     _build_topic_anchor_terms as _default_build_topic_anchor_terms,
     _build_topic_keywords as _default_build_topic_keywords,
@@ -36,7 +36,7 @@ def fetch_sources(
     is_topic_relevant: Callable[..., bool] | None = None,
 ) -> Dict[str, Any]:
     """Fetch sources, apply routing, and accumulate deduplicated results."""
-    state_view = state_view or with_flattened_legacy_view
+    state_view = state_view or (lambda current_state: current_state)
     get_cfg = get_cfg or (lambda current_state: current_state.get("_cfg", {}))
     ns = ns or to_namespaced_update
     dispatch = dispatch or _default_dispatch

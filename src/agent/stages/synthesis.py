@@ -13,7 +13,7 @@ from src.agent.core.config import (
 from src.agent.core.evidence import _build_claim_evidence_map, _build_evidence_audit_log
 from src.agent.core.query_planning import _load_budget_and_scope as _default_load_budget_and_scope
 from src.agent.core.schemas import ResearchState
-from src.agent.core.state_access import to_namespaced_update, with_flattened_legacy_view
+from src.agent.core.state_access import to_namespaced_update
 from src.agent.core.source_ranking import (
     _dedupe_and_rank_analyses,
     _has_traceable_source,
@@ -34,7 +34,7 @@ def synthesize(
     parse_json: Callable[[str], Dict[str, Any]] | None = None,
 ) -> Dict[str, Any]:
     """Synthesize ranked analyses into the working research narrative."""
-    state_view = state_view or with_flattened_legacy_view
+    state_view = state_view or (lambda current_state: current_state)
     get_cfg = get_cfg or (lambda current_state: current_state.get("_cfg", {}))
     load_budget_and_scope = load_budget_and_scope or _default_load_budget_and_scope
     ns = ns or to_namespaced_update
@@ -99,11 +99,8 @@ def synthesize(
 
     try:
         result = parse_json(raw)
-    except json.JSONDecodeError:
-        result = {
-            "synthesis": raw,
-            "gaps": [],
-        }
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("synthesize returned invalid JSON") from exc
 
     claim_map = _build_claim_evidence_map(
         research_questions=state.get("research_questions", []),

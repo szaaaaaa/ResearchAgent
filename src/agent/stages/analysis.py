@@ -15,7 +15,7 @@ from src.agent.core.source_ranking import (
     _normalize_source_url as _default_normalize_source_url,
     _source_tier as _default_source_tier,
 )
-from src.agent.core.state_access import to_namespaced_update, with_flattened_legacy_view
+from src.agent.core.state_access import to_namespaced_update
 from src.agent.core.topic_filter import _extract_table_signals as _default_extract_table_signals
 from src.common.rag_config import retrieval_effective_embedding_model, scoped_collection_name
 from src.agent.prompts import (
@@ -43,7 +43,7 @@ def analyze_sources(
     normalize_source_url: Callable[[str], str] | None = None,
 ) -> Dict[str, Any]:
     """Analyze paper and web sources into structured findings."""
-    state_view = state_view or with_flattened_legacy_view
+    state_view = state_view or (lambda current_state: current_state)
     get_cfg = get_cfg or (lambda current_state: current_state.get("_cfg", {}))
     ns = ns or to_namespaced_update
     dispatch = dispatch or _default_dispatch
@@ -143,14 +143,8 @@ def analyze_sources(
 
         try:
             analysis = parse_json(raw)
-        except json.JSONDecodeError:
-            analysis = {
-                "summary": raw[:500],
-                "key_findings": [],
-                "methodology": "unknown",
-                "relevance_score": 0.5,
-                "limitations": [],
-            }
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Paper analysis returned invalid JSON for '{paper['title']}'") from exc
 
         analysis["uid"] = paper["uid"]
         analysis["title"] = paper["title"]
@@ -219,15 +213,8 @@ def analyze_sources(
 
         try:
             analysis = parse_json(raw)
-        except json.JSONDecodeError:
-            analysis = {
-                "summary": raw[:500],
-                "key_findings": [],
-                "source_type": "other",
-                "credibility": "medium",
-                "relevance_score": 0.5,
-                "limitations": [],
-            }
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Web analysis returned invalid JSON for '{web_source['title']}'") from exc
 
         analysis["uid"] = web_source["uid"]
         analysis["title"] = web_source["title"]

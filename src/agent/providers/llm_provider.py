@@ -77,12 +77,8 @@ def call_llm(
     retries = int(provider_cfg.get("retries", 0))
     backoff_sec = float(provider_cfg.get("retry_backoff_sec", 1.0))
     backend_name = str(provider_cfg.get("backend", "")).strip().lower() or provider_name
-    fallback_model = str(provider_cfg.get("fallback_model", "")).strip()
-    if not fallback_model:
-        fallback_model = _DEFAULT_MODEL_BY_PROVIDER.get(provider_name, resolved_model)
     ensure_plugins_registered()
     adapter = get_llm_provider(provider_name)
-    backoff_used = False
 
     last_err: Exception | None = None
     for attempt in range(retries + 1):
@@ -133,59 +129,6 @@ def call_llm(
 
             if action == FailureAction.ABORT:
                 raise
-
-            if action == FailureAction.BACKOFF and not backoff_used and fallback_model != resolved_model:
-                backoff_used = True
-                logger.warning(
-                    "LLM backend '%s' routed BACKOFF: model %s -> %s",
-                    backend_name,
-                    resolved_model,
-                    fallback_model,
-                )
-                resolved_model = fallback_model
-                try:
-                    response = adapter.generate(
-                        ModelRequest(
-                            system_prompt=system_prompt,
-                            user_prompt=user_prompt,
-                            model=resolved_model,
-                            temperature=resolved_temperature,
-                            max_tokens=resolved_max_tokens,
-                            cfg=cfg,
-                        )
-                    )
-                    output = response.content
-                    usage = dict(response.usage)
-                    prompt_tokens = int(usage.get("prompt_tokens") or 0)
-                    completion_tokens = int(usage.get("completion_tokens") or 0)
-                    guard = cfg.get("_budget_guard")
-                    if guard and hasattr(guard, "record_llm_call"):
-                        guard.record_llm_call(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
-                    return output
-                except Exception as backoff_exc:
-                    last_err = backoff_exc
-                    action = classify_failure(backoff_exc, context="llm_call_backoff")
-                    emit_event(
-                        cfg,
-                        {
-                            "event": "failure_routed",
-                            "context": "llm_call_backoff",
-                            "backend": backend_name,
-                            "attempt": attempt + 1,
-                            "exception": type(backoff_exc).__name__,
-                            "error": str(backoff_exc),
-                            "action": action.value,
-                        },
-                    )
-                    if action == FailureAction.ABORT:
-                        raise
-                    if action == FailureAction.SKIP:
-                        logger.warning("LLM backend '%s' routed SKIP after backoff: %s", backend_name, backoff_exc)
-                        return ""
-
-            if action == FailureAction.SKIP:
-                logger.warning("LLM backend '%s' routed SKIP: %s", backend_name, exc)
-                return ""
 
             if attempt >= retries:
                 break

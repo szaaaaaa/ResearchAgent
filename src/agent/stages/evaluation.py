@@ -5,7 +5,7 @@ import json
 from typing import Any, Callable, Dict, List
 
 from src.agent.core.schemas import ResearchState
-from src.agent.core.state_access import to_namespaced_update, with_flattened_legacy_view
+from src.agent.core.state_access import to_namespaced_update
 from src.agent.prompts import EVALUATE_SYSTEM, EVALUATE_USER
 from src.agent.stages.runtime import llm_call as _runtime_llm_call, parse_json as _runtime_parse_json
 
@@ -20,7 +20,7 @@ def evaluate_progress(
     parse_json: Callable[[str], Dict[str, Any]] | None = None,
 ) -> Dict[str, Any]:
     """Decide whether to continue researching or generate the final report."""
-    state_view = state_view or with_flattened_legacy_view
+    state_view = state_view or (lambda current_state: current_state)
     get_cfg = get_cfg or (lambda current_state: current_state.get("_cfg", {}))
     ns = ns or to_namespaced_update
     llm_call = llm_call or _runtime_llm_call
@@ -78,8 +78,8 @@ def evaluate_progress(
 
     try:
         result = parse_json(raw)
-    except json.JSONDecodeError:
-        result = {"should_continue": False, "gaps": []}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("evaluate_progress returned invalid JSON") from exc
 
     should_continue = bool(result.get("should_continue", False))
     evidence_audit_log = state.get("evidence_audit_log", [])

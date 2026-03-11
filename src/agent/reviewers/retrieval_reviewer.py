@@ -170,22 +170,6 @@ def _normalize_verdict(verdict_raw: Dict[str, Any], *, has_usable_sources: bool)
     )
 
 
-def _fallback_review(*, has_usable_sources: bool, message: str) -> Dict[str, Any]:
-    return {
-        "verdict": {
-            "status": "warn" if has_usable_sources else "fail",
-            "action": "degrade" if has_usable_sources else "block",
-            "issues": [message],
-            "suggested_fix": ["Inspect the critic response and rerun if needed."],
-            "confidence": 0.2,
-        },
-        "missing_key_topics": [],
-        "year_coverage_gaps": [],
-        "venue_coverage_gaps": [],
-        "suggested_queries": [],
-    }
-
-
 def review_retrieval(
     state: ResearchState,
     *,
@@ -232,17 +216,11 @@ def review_retrieval(
     )
     try:
         result = parse_json(raw)
-    except json.JSONDecodeError:
-        result = _fallback_review(
-            has_usable_sources=has_usable_sources,
-            message="LLM critic returned invalid JSON.",
-        )
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("retrieval reviewer returned invalid JSON") from exc
 
     if not isinstance(result, dict):
-        result = _fallback_review(
-            has_usable_sources=has_usable_sources,
-            message="LLM critic returned an invalid payload.",
-        )
+        raise RuntimeError("retrieval reviewer returned an invalid payload")
 
     verdict = _normalize_verdict(dict(result.get("verdict", {})), has_usable_sources=has_usable_sources)
     missing_key_topics = _normalize_string_list(result.get("missing_key_topics", []))

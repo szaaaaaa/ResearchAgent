@@ -3,11 +3,15 @@ from dataclasses import dataclass
 from typing import Optional, List
 from datetime import datetime
 from urllib.parse import quote_plus
-import feedparser
 import time 
 import requests
 import sqlite3
 from pathlib import Path
+
+try:
+    import feedparser
+except Exception:
+    feedparser = None
 
 
 @dataclass
@@ -45,6 +49,8 @@ def fetch_arxiv(
     source_dir: str = "data/sources",
     polite_delay_sec: float = 1.0,
 ) -> List[PaperRecord]:
+    if feedparser is None:
+        raise RuntimeError("feedparser is required for arXiv fetching")
     
     q = quote_plus(query)
     search_url = (
