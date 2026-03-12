@@ -133,15 +133,7 @@ export interface ProjectConfig {
 
 export interface RunOverrides {
   prompt: string;
-  resume_run_id: string;
-  mode: string;
   output_dir: string;
-  language: string;
-  max_iter: number;
-  papers_per_query: number;
-  sources: string[];
-  no_web: boolean;
-  no_scrape: boolean;
   verbose: boolean;
 }
 
@@ -152,28 +144,60 @@ export interface ChatMessage {
   streaming?: boolean;
 }
 
+export interface RoutePlanNode {
+  node_id: string;
+  role: string;
+  goal: string;
+  inputs: string[];
+  allowed_skills: string[];
+  success_criteria: string[];
+  failure_policy: string;
+  expected_outputs: string[];
+  needs_review: boolean;
+}
+
 export interface RouteEdge {
   source: string;
   target: string;
+  condition?: string;
 }
 
 export interface RoutePlan {
-  mode: string;
-  nodes: string[];
+  run_id: string;
+  planning_iteration: number;
+  horizon: number;
+  nodes: RoutePlanNode[];
   edges: RouteEdge[];
-  planned_skills: string[];
-  rationale: string[];
+  planner_notes: string[];
+  terminate: boolean;
 }
 
-export type RoleStatusMap = Partial<Record<AgentRoleId, string>>;
+export type NodeStatusMap = Record<string, string>;
+
+export interface RunArtifact {
+  artifact_id: string;
+  artifact_type: string;
+  producer_role: string;
+  producer_skill: string;
+}
 
 export interface RunEvent {
   id: string;
   ts: string;
-  event: string;
+  type: string;
+  runId: string;
+  nodeId: string;
   role: string;
+  skillId: string;
+  toolId: string;
+  phase?: string;
   status: string;
-  decision: string;
+  reason: string;
+  blockedAction?: string;
+  artifactId?: string;
+  artifactType?: string;
+  producerRole?: string;
+  producerSkill?: string;
   iteration: number | null;
   detail: string;
 }
@@ -188,7 +212,8 @@ export interface ChatSession {
   runId: string;
   status: string;
   routePlan: RoutePlan | null;
-  roleStatus: RoleStatusMap;
+  nodeStatus: NodeStatusMap;
+  artifacts: RunArtifact[];
   runEvents: RunEvent[];
   rawTerminalLog: string;
 }

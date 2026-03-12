@@ -5,8 +5,9 @@ import {
   ChatSession,
   Credentials,
   CredentialStatusMap,
+  NodeStatusMap,
   ProjectConfig,
-  RoleStatusMap,
+  RunArtifact,
   RoutePlan,
   RunEvent,
   RunOverrides,
@@ -184,15 +185,7 @@ const defaultProjectConfig: ProjectConfig = {
 
 const defaultRunOverrides: RunOverrides = {
   prompt: '',
-  resume_run_id: '',
-  mode: 'os',
   output_dir: './outputs',
-  language: 'zh',
-  max_iter: 5,
-  papers_per_query: 5,
-  sources: ['arxiv', 'semantic_scholar', 'web'],
-  no_web: false,
-  no_scrape: false,
   verbose: false,
 };
 
@@ -204,7 +197,8 @@ const defaultModelCatalog = {
   modelCount: 0,
 };
 
-const defaultRuntimeMode = '6-agent';
+const defaultRuntimeMode = 'dynamic-os';
+const READ_ONLY_RUNTIME_MESSAGE = 'Dynamic OS runtime settings are read-only. Edit configs/agent.yaml and .env directly.';
 
 type ProviderCatalogState = Pick<
   AppState,
@@ -224,34 +218,75 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function warnReadOnlyRuntimeConfig(): void {
+  console.warn(READ_ONLY_RUNTIME_MESSAGE);
+}
+
 function createSessionId(): string {
   return `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function emptyRoutePlan(): RoutePlan {
   return {
-    mode: 'auto',
+    run_id: '',
+    planning_iteration: 0,
+    horizon: 0,
     nodes: [],
     edges: [],
-    planned_skills: [],
-    rationale: [],
+    planner_notes: [],
+    terminate: false,
   };
 }
 
-function emptyRoleStatus(): RoleStatusMap {
+function emptyNodeStatus(): NodeStatusMap {
   return {};
 }
 
-function normalizeRoleStatus(value: unknown): RoleStatusMap {
+function normalizeRunStatus(value: unknown): string {
+  const status = String(value || '').trim().toLowerCase();
+  if (status === 'running') {
+    return 'Running';
+  }
+  if (status === 'stopping') {
+    return 'Stopping';
+  }
+  if (status === 'stopped') {
+    return 'Stopped';
+  }
+  if (status === 'failed') {
+    return 'Failed';
+  }
+  if (status === 'completed') {
+    return 'Completed';
+  }
+  return String(value || '');
+}
+
+function normalizeNodeStatus(value: unknown): NodeStatusMap {
   if (!isRecord(value)) {
-    return emptyRoleStatus();
+    return emptyNodeStatus();
   }
 
   return Object.fromEntries(
     Object.entries(value)
       .map(([key, item]) => [String(key), String(item || '')] as const)
       .filter(([, item]) => item),
-  ) as RoleStatusMap;
+  ) as NodeStatusMap;
+}
+
+function normalizeArtifacts(value: unknown): RunArtifact[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((item) => isRecord(item))
+    .map((item) => ({
+      artifact_id: String(item.artifact_id || ''),
+      artifact_type: String(item.artifact_type || ''),
+      producer_role: String(item.producer_role || ''),
+      producer_skill: String(item.producer_skill || ''),
+    }))
+    .filter((item) => item.artifact_id && item.artifact_type);
 }
 
 function normalizeRunEvent(value: unknown): RunEvent | null {
@@ -259,12 +294,12 @@ function normalizeRunEvent(value: unknown): RunEvent | null {
     return null;
   }
 
-  const event = String(value.event || '').trim();
-  if (!event) {
+  const type = String(value.type || value.event || '').trim();
+  if (!type) {
     return null;
   }
 
-  const iterationRaw = value.iteration;
+  const iterationRaw = value.planning_iteration ?? value.iteration;
   const iteration =
     typeof iterationRaw === 'number'
       ? iterationRaw
@@ -272,38 +307,51 @@ function normalizeRunEvent(value: unknown): RunEvent | null {
         ? null
         : Number(iterationRaw);
   let detail = String(value.detail || '');
-  if (!detail && event === 'os_route_resolved' && Array.isArray(value.nodes)) {
-    detail = value.nodes.map((item) => String(item)).filter(Boolean).join(' -> ');
+  if (!detail && type === 'plan_update' && isRecord(value.plan) && Array.isArray(value.plan.nodes)) {
+    detail = `${value.plan.nodes.length} node(s) planned`;
   }
-  if (!detail && event === 'failure_routed') {
-    detail = [String(value.context || ''), String(value.action || '')].filter(Boolean).join(' | ');
+  if (!detail && type === 'observation' && isRecord(value.observation)) {
+    detail = String(value.observation.what_happened || '');
   }
-  if (!detail && event === 'provider_circuit_opened') {
-    detail = String(value.provider || '');
+  if (!detail && type === 'replan') {
+    detail = String(value.reason || '');
   }
-  if (!detail && event === 'provider_circuit_open_skip') {
-    detail = String(value.provider || '');
+  if (!detail && type === 'artifact_created') {
+    detail = `${String(value.artifact_type || '')} ${String(value.artifact_id || '')}`.trim();
+  }
+  if (!detail && type === 'policy_block') {
+    detail = String(value.reason || '');
   }
 
   return {
-    id: String(value.id || `${event}-${String(value.ts || nowIso())}`),
+    id: String(value.id || `${type}-${String(value.ts || nowIso())}`),
     ts: String(value.ts || nowIso()),
-    event,
+    type,
+    runId: String(value.run_id || ''),
+    nodeId: String(value.node_id || ''),
     role: String(value.role || ''),
+    skillId: String(value.skill_id || ''),
+    toolId: String(value.tool_id || ''),
+    phase: String(value.phase || ''),
     status: String(value.status || ''),
-    decision: String(value.decision || ''),
+    reason: String(value.reason || ''),
+    blockedAction: String(value.blocked_action || ''),
+    artifactId: String(value.artifact_id || ''),
+    artifactType: String(value.artifact_type || ''),
+    producerRole: String(value.producer_role || ''),
+    producerSkill: String(value.producer_skill || ''),
     iteration: Number.isFinite(iteration) ? iteration : null,
     detail,
   };
 }
 
-function roleStatusAfterStop(roleStatus: RoleStatusMap): RoleStatusMap {
+function nodeStatusAfterStop(nodeStatus: NodeStatusMap): NodeStatusMap {
   return Object.fromEntries(
-    Object.entries(roleStatus).map(([role, status]) => {
-      const nextStatus = ['completed', 'pass', 'revise', 'failed', 'skipped'].includes(status) ? status : 'stopped';
-      return [role, nextStatus];
+    Object.entries(nodeStatus).map(([nodeId, status]) => {
+      const nextStatus = ['success', 'failed', 'skipped'].includes(status) ? status : 'stopped';
+      return [nodeId, nextStatus];
     }),
-  ) as RoleStatusMap;
+  ) as NodeStatusMap;
 }
 
 function createEmptySession(): ChatSession {
@@ -317,7 +365,8 @@ function createEmptySession(): ChatSession {
     runId: '',
     status: '',
     routePlan: null,
-    roleStatus: emptyRoleStatus(),
+    nodeStatus: emptyNodeStatus(),
+    artifacts: [],
     runEvents: [],
     rawTerminalLog: '',
     messages: [
@@ -335,23 +384,41 @@ function normalizeRoutePlan(value: unknown): RoutePlan | null {
     return null;
   }
 
-  const nodes = Array.isArray(value.nodes) ? value.nodes.map((item) => String(item)) : [];
+  const nodes = Array.isArray(value.nodes)
+    ? value.nodes
+        .filter((item) => isRecord(item))
+        .map((item) => ({
+          node_id: String(item.node_id || ''),
+          role: String(item.role || ''),
+          goal: String(item.goal || ''),
+          inputs: Array.isArray(item.inputs) ? item.inputs.map((entry) => String(entry)) : [],
+          allowed_skills: Array.isArray(item.allowed_skills) ? item.allowed_skills.map((entry) => String(entry)) : [],
+          success_criteria: Array.isArray(item.success_criteria) ? item.success_criteria.map((entry) => String(entry)) : [],
+          failure_policy: String(item.failure_policy || ''),
+          expected_outputs: Array.isArray(item.expected_outputs) ? item.expected_outputs.map((entry) => String(entry)) : [],
+          needs_review: Boolean(item.needs_review),
+        }))
+        .filter((item) => item.node_id && item.role)
+    : [];
   const edges = Array.isArray(value.edges)
     ? value.edges
         .filter((item) => isRecord(item))
         .map((item) => ({
           source: String(item.source || ''),
           target: String(item.target || ''),
+          condition: String(item.condition || ''),
         }))
         .filter((item) => item.source && item.target)
     : [];
 
   return {
-    mode: String(value.mode || 'auto'),
+    run_id: String(value.run_id || ''),
+    planning_iteration: Number(value.planning_iteration || 0),
+    horizon: Number(value.horizon || nodes.length),
     nodes,
     edges,
-    planned_skills: Array.isArray(value.planned_skills) ? value.planned_skills.map((item) => String(item)) : [],
-    rationale: Array.isArray(value.rationale) ? value.rationale.map((item) => String(item)) : [],
+    planner_notes: Array.isArray(value.planner_notes) ? value.planner_notes.map((item) => String(item)) : [],
+    terminate: Boolean(value.terminate),
   };
 }
 
@@ -385,9 +452,10 @@ function normalizeSession(value: unknown): ChatSession | null {
     updatedAt,
     archived: Boolean(value.archived),
     runId: String(value.runId || ''),
-    status: String(value.status || ''),
+    status: normalizeRunStatus(value.status),
     routePlan: normalizeRoutePlan(value.routePlan),
-    roleStatus: normalizeRoleStatus(value.roleStatus),
+    nodeStatus: normalizeNodeStatus(value.nodeStatus),
+    artifacts: normalizeArtifacts(value.artifacts),
     runEvents: Array.isArray(value.runEvents)
       ? value.runEvents.map(normalizeRunEvent).filter((item): item is RunEvent => Boolean(item))
       : [],
@@ -548,7 +616,7 @@ function normalizeModelSelections(
 
   return {
     projectConfig: syncedConfig,
-    runOverrides: { ...runOverrides, mode: 'os' },
+    runOverrides: { ...runOverrides },
   };
 }
 
@@ -776,22 +844,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   const saveConfigToBackend = async (newConfig: ProjectConfig) => {
-    const response = await fetch(`${API_BASE}/api/config`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newConfig),
-    });
-    if (!response.ok) {
-      throw new Error(await readErrorDetail(response));
-    }
+    void newConfig;
+    warnReadOnlyRuntimeConfig();
   };
 
   const saveProjectConfig = async () => {
-    await saveConfigToBackend(projectConfigRef.current);
-    setState((prev) => ({
-      ...prev,
-      hasUnsavedModelChanges: false,
-    }));
+    warnReadOnlyRuntimeConfig();
   };
 
   const updateSession = (conversationId: string, updater: (session: ChatSession) => ChatSession) => {
@@ -847,7 +905,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         status: '',
         runId: '',
         routePlan: null,
-        roleStatus: emptyRoleStatus(),
+        nodeStatus: emptyNodeStatus(),
+        artifacts: [],
         runEvents: [],
         rawTerminalLog: '',
         messages: source.messages.map((message) => ({
@@ -907,72 +966,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateCredentials = (updates: Partial<Credentials>) => {
-    const nextCredentials = { ...credentialsRef.current, ...updates };
-    credentialsRef.current = nextCredentials;
-    setState((prev) => ({ ...prev, credentials: nextCredentials }));
+    void updates;
+    warnReadOnlyRuntimeConfig();
   };
 
   const saveCredentials = async () => {
-    const response = await fetch(`${API_BASE}/api/credentials`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(credentialsRef.current),
-    });
-    if (!response.ok) {
-      throw new Error(await readErrorDetail(response));
-    }
-    const data = await response.json();
-    credentialsRef.current = defaultCredentials;
-    setState((prev) => ({
-      ...prev,
-      credentials: defaultCredentials,
-      credentialStatus: mergeDeep(defaultCredentialStatus, data.status_map),
-    }));
-    await refreshAllProviderCatalogs();
+    warnReadOnlyRuntimeConfig();
   };
 
   const updateProjectConfig = (path: string, value: unknown) => {
-    const nextConfig = updateNestedValue(projectConfigRef.current, path, value);
-    const normalized = normalizeModelSelections(nextConfig, runOverridesRef.current, catalogsRef.current);
-    projectConfigRef.current = normalized.projectConfig;
-    runOverridesRef.current = normalized.runOverrides;
-
-    setState((prev) => {
-      void saveConfigToBackend(normalized.projectConfig).catch((err) => console.error('Failed to save config', err));
-      return {
-        ...prev,
-        projectConfig: normalized.projectConfig,
-        hasUnsavedModelChanges: false,
-        runOverrides: normalized.runOverrides,
-      };
-    });
+    void path;
+    void value;
+    warnReadOnlyRuntimeConfig();
   };
 
   const updateRoleModel = (
     roleId: AgentRoleId,
     updates: Partial<ProjectConfig['llm']['role_models'][AgentRoleId]>,
   ) => {
-    const nextConfig = structuredClone(projectConfigRef.current);
-    nextConfig.llm.role_models[roleId] = {
-      ...nextConfig.llm.role_models[roleId],
-      ...updates,
-    };
-    const normalized = normalizeModelSelections(nextConfig, runOverridesRef.current, catalogsRef.current);
-    projectConfigRef.current = normalized.projectConfig;
-    runOverridesRef.current = normalized.runOverrides;
-
-    setState((prev) => {
-      return {
-        ...prev,
-        projectConfig: normalized.projectConfig,
-        hasUnsavedModelChanges: true,
-        runOverrides: normalized.runOverrides,
-      };
-    });
+    void roleId;
+    void updates;
+    warnReadOnlyRuntimeConfig();
   };
 
   const updateRunOverrides = (updates: Partial<RunOverrides>) => {
-    const nextRunOverrides = { ...runOverridesRef.current, ...updates, mode: 'os' };
+    const nextRunOverrides = { ...runOverridesRef.current, ...updates };
     runOverridesRef.current = nextRunOverrides;
     setState((prev) => ({
       ...prev,
@@ -1008,16 +1026,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       run_id?: string;
       status?: string;
       route_plan?: RoutePlan | null;
-      role_status?: RoleStatusMap;
+      node_status?: NodeStatusMap;
+      artifacts?: RunArtifact[];
+      report_text?: string;
     },
   ) => {
     updateSession(conversationId, (session) => ({
       ...session,
       updatedAt: nowIso(),
       runId: String(event.run_id || session.runId || ''),
-      status: String(event.status || session.status || ''),
+      status: normalizeRunStatus(event.status || session.status || ''),
       routePlan: normalizeRoutePlan(event.route_plan) || session.routePlan || emptyRoutePlan(),
-      roleStatus: Object.keys(event.role_status || {}).length > 0 ? normalizeRoleStatus(event.role_status) : session.roleStatus,
+      nodeStatus:
+        Object.keys(event.node_status || {}).length > 0 ? normalizeNodeStatus(event.node_status) : session.nodeStatus,
+      artifacts: Array.isArray(event.artifacts) ? normalizeArtifacts(event.artifacts) : session.artifacts,
     }));
   };
 
@@ -1029,21 +1051,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     updateSession(conversationId, (session) => {
       const nextEvents = [...session.runEvents, event].slice(-40);
-      const nextRoleStatus =
-        event.event === 'os_role_status' && event.role
-          ? { ...session.roleStatus, [event.role]: event.status || 'pending' }
-          : session.roleStatus;
+      const nextNodeStatus =
+        event.type === 'node_status' && event.nodeId ? { ...session.nodeStatus, [event.nodeId]: event.status || 'pending' } : session.nodeStatus;
       const nextRoutePlan =
-        event.event === 'os_route_resolved' && isRecord(payload)
-          ? normalizeRoutePlan(payload) || session.routePlan
+        event.type === 'plan_update' && isRecord(payload) && isRecord(payload.plan)
+          ? normalizeRoutePlan(payload.plan) || session.routePlan
           : session.routePlan;
+      const nextArtifacts =
+        event.type === 'artifact_created' && isRecord(payload)
+          ? [
+              ...session.artifacts,
+              {
+                artifact_id: String(payload.artifact_id || ''),
+                artifact_type: String(payload.artifact_type || ''),
+                producer_role: String(payload.producer_role || ''),
+                producer_skill: String(payload.producer_skill || ''),
+              },
+            ].filter((item) => item.artifact_id && item.artifact_type)
+          : session.artifacts;
 
       return {
         ...session,
         updatedAt: nowIso(),
         runId: isRecord(payload) ? String(payload.run_id || session.runId || '') : session.runId,
         routePlan: nextRoutePlan,
-        roleStatus: nextRoleStatus,
+        nodeStatus: nextNodeStatus,
+        artifacts: nextArtifacts,
         runEvents: nextEvents,
       };
     });
@@ -1062,13 +1095,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const startRun = async () => {
     const latestRunOverrides = runOverridesRef.current;
-    const latestProjectConfig = projectConfigRef.current;
-    const latestCredentials = credentialsRef.current;
     const prompt = latestRunOverrides.prompt.trim();
-    const resumeRunId = latestRunOverrides.resume_run_id.trim();
+    const resumeRunId = '';
     const activeConversationId = activeConversationIdRef.current;
 
-    if (!prompt && !resumeRunId) {
+    if (!prompt) {
       updateSession(activeConversationId, (session) => ({
         ...session,
         updatedAt: nowIso(),
@@ -1093,12 +1124,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const requestBody = JSON.stringify({
       client_request_id: clientRequestId,
       runOverrides: {
+        output_dir: latestRunOverrides.output_dir,
+        verbose: latestRunOverrides.verbose,
         topic: prompt,
         user_request: prompt,
-        resume_run_id: resumeRunId,
       },
-      projectConfig: latestProjectConfig,
-      credentials: latestCredentials,
     });
 
     setState((prev) => ({
@@ -1120,7 +1150,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           updatedAt: nowIso(),
           status: 'Running',
           routePlan: null,
-          roleStatus: emptyRoleStatus(),
+          nodeStatus: emptyNodeStatus(),
+          artifacts: [],
           runEvents: [],
           rawTerminalLog: '',
           messages: [
@@ -1190,7 +1221,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               run_id?: string;
               status?: string;
               route_plan?: RoutePlan | null;
-              role_status?: RoleStatusMap;
+              node_status?: NodeStatusMap;
+              artifacts?: RunArtifact[];
+              report_text?: string;
             };
             applyRunStateEvent(activeConversationId, event);
             continue;
@@ -1211,7 +1244,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             run_id?: string;
             status?: string;
             route_plan?: RoutePlan | null;
-            role_status?: RoleStatusMap;
+            node_status?: NodeStatusMap;
+            artifacts?: RunArtifact[];
+            report_text?: string;
           };
           applyRunStateEvent(activeConversationId, event);
         } else {
@@ -1241,23 +1276,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       manuallyStoppedRequestIdsRef.current.delete(clientRequestId);
       setState((prev) => ({
         ...prev,
-        runOverrides: { ...prev.runOverrides, prompt: '', mode: 'os' },
+        runOverrides: { ...prev.runOverrides, prompt: '' },
         conversations: prev.conversations.map((session) => {
           if (session.id !== activeConversationId) {
             return session;
           }
 
-          const nextStatus = session.status || 'Completed';
+          const nextStatus = normalizeRunStatus(session.status);
           return {
             ...session,
             updatedAt: nowIso(),
-            status: wasStopped ? 'Stopped' : nextStatus === 'Running' || nextStatus === 'Stopping' ? 'Completed' : nextStatus,
+            status:
+              wasStopped
+                ? 'Stopped'
+                : nextStatus === 'Running' || nextStatus === 'Stopping'
+                  ? 'Failed'
+                  : nextStatus || 'Completed',
             messages: session.messages.map((message) =>
               message.id === assistantId
                 ? {
                     ...message,
                     streaming: false,
-                    content: wasStopped ? message.content || '运行已手动停止。' : message.content || '运行已完成，但没有可显示的流式输出。',
+                    content:
+                      wasStopped
+                        ? message.content || '运行已手动停止。'
+                        : nextStatus === 'Running' || nextStatus === 'Stopping'
+                          ? message.content || '运行提前结束，未收到最终完成状态。'
+                          : message.content || '运行已完成，但没有可显示的流式输出。',
                   }
                 : message,
             ),
@@ -1303,16 +1348,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ...session,
         updatedAt: nowIso(),
         status: 'Stopped',
-        roleStatus: roleStatusAfterStop(session.roleStatus),
+        nodeStatus: nodeStatusAfterStop(session.nodeStatus),
         runEvents: [
           ...session.runEvents,
           {
             id: `run-stopped-${Date.now()}`,
             ts: nowIso(),
-            event: 'run_stopped',
+            type: 'run_terminate',
+            runId: session.runId,
+            nodeId: '',
             role: '',
+            skillId: '',
+            toolId: '',
             status: 'stopped',
-            decision: '',
+            reason: 'stopped',
             iteration: null,
             detail: '用户已停止当前运行。',
           },

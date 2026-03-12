@@ -1,6 +1,7 @@
 import React from 'react';
 import { ArrowUpRight, Bot, LoaderCircle, SendHorizonal, Square, User2 } from 'lucide-react';
 import { useAppContext } from '../../store';
+import { NodeStatusMap, RoutePlan, RunArtifact } from '../../types';
 import { Button } from '../ui';
 import { UiPreferences } from '../settings/types';
 import { RouteGraph } from '../RouteGraph';
@@ -8,9 +9,9 @@ import { BehaviorTimeline } from '../BehaviorTimeline';
 import { RawTerminalPanel } from '../RawTerminalPanel';
 
 const PROMPT_TEMPLATES = [
-  '比较面向智能体 RAG 的长上下文检索策略。',
-  '规划一份关于多模态研究智能体的文献综述。',
-  '总结自改进 planner-critic 流水线的设计权衡。',
+  '为一个关于动态研究智能体系统的主题生成最小研究闭环。',
+  '比较 planner -> executor -> skill -> tool 架构和旧固定流水线的差异。',
+  '分析一个检索增强系统在 reviewer 按需插入下的运行路径。',
 ];
 
 function formatStatusLabel(status: string): string {
@@ -29,7 +30,7 @@ function formatStatusLabel(status: string): string {
   if (status === 'Completed') {
     return '已完成';
   }
-  return '空闲';
+  return '待命';
 }
 
 function getMessageWidthClass(chatWidth: UiPreferences['chatWidth']): string {
@@ -52,66 +53,89 @@ function formatTimestamp(value: string): string {
   }).format(new Date(value));
 }
 
-function currentRoleLabel(roleStatus: Record<string, string>): string {
-  const labels: Record<string, string> = {
-    conductor: '统筹',
-    researcher: '研究',
-    experimenter: '实验',
-    analyst: '分析',
-    writer: '写作',
-    critic: '评审',
-  };
-  const runningEntry = Object.entries(roleStatus).find(([, status]) => status === 'running');
-  if (runningEntry) {
-    return labels[runningEntry[0]] || runningEntry[0];
+function currentNode(routePlan: RoutePlan | null, nodeStatus: NodeStatusMap): { nodeId: string; status: string; goal: string; role: string } | null {
+  if (!routePlan) {
+    return null;
   }
-  const waitingEntry = Object.entries(roleStatus).find(([, status]) => status === 'waiting');
-  if (waitingEntry) {
-    return labels[waitingEntry[0]] || waitingEntry[0];
+
+  for (const node of routePlan.nodes) {
+    const status = nodeStatus[node.node_id];
+    if (status === 'running') {
+      return { nodeId: node.node_id, status, goal: node.goal, role: node.role };
+    }
   }
-  return '';
+  for (const node of routePlan.nodes) {
+    const status = nodeStatus[node.node_id];
+    if (status === 'needs_replan' || status === 'partial') {
+      return { nodeId: node.node_id, status, goal: node.goal, role: node.role };
+    }
+  }
+  for (const node of routePlan.nodes) {
+    const status = nodeStatus[node.node_id] || 'pending';
+    if (status === 'pending') {
+      return { nodeId: node.node_id, status, goal: node.goal, role: node.role };
+    }
+  }
+  return routePlan.nodes.length > 0
+    ? {
+        nodeId: routePlan.nodes[routePlan.nodes.length - 1].node_id,
+        status: nodeStatus[routePlan.nodes[routePlan.nodes.length - 1].node_id] || 'pending',
+        goal: routePlan.nodes[routePlan.nodes.length - 1].goal,
+        role: routePlan.nodes[routePlan.nodes.length - 1].role,
+      }
+    : null;
 }
 
 function summarizeCurrentStage(conversation: {
   status: string;
-  routePlan: { nodes: string[] } | null;
-  roleStatus: Record<string, string>;
+  routePlan: RoutePlan | null;
+  nodeStatus: NodeStatusMap;
+  artifacts: RunArtifact[];
 }): { title: string; detail: string } {
-  if (conversation.status === 'Completed' || conversation.status === 'Stopping' || conversation.status === 'Stopped' || conversation.status === 'Failed') {
-    return conversation.status === 'Completed'
-      ? { title: '已完成', detail: '研究任务已完成，可以查看路由、时间线和最终输出。' }
-      : conversation.status === 'Failed'
-        ? { title: '运行失败', detail: '当前运行已中断，请查看时间线和终端日志定位原因。' }
-        : { title: '已停止', detail: '当前运行已被手动停止，行为图已同步收口。' };
-  }
-  const currentRole = currentRoleLabel(conversation.roleStatus);
-  if (currentRole) {
-    const status = Object.entries(conversation.roleStatus).find(([, value]) => value === 'running')?.[1] === 'running'
-      ? '正在执行'
-      : '等待继续';
-    return {
-      title: `${status}：${currentRole}`,
-      detail: conversation.routePlan?.nodes.length
-        ? `已规划 ${conversation.routePlan.nodes.length} 个角色节点，当前聚焦在${currentRole}阶段。`
-        : `当前聚焦在${currentRole}阶段。`,
-    };
-  }
   if (conversation.status === 'Completed') {
-    return { title: '已完成', detail: '运行已结束，下面显示最终结果与关键行为时间线。' };
-  }
-  if (conversation.status === 'Stopping' || conversation.status === 'Stopped') {
-    return { title: '已停止', detail: '运行已被手动停止。' };
+    return {
+      title: '运行完成',
+      detail: `已完成本次动态路由执行，累计产出 ${conversation.artifacts.length} 个 artifacts。`,
+    };
   }
   if (conversation.status === 'Failed') {
-    return { title: '运行失败', detail: '执行过程中出现异常，请查看时间线中的失败事件。' };
-  }
-  if (conversation.routePlan?.nodes.length) {
     return {
-      title: '已确定执行路径',
-      detail: `本次将按 ${conversation.routePlan.nodes.length} 个角色节点推进。`,
+      title: '运行失败',
+      detail: '执行链路被中断，请结合下方时间线查看 observation、policy block 或 replan 事件。',
     };
   }
-  return { title: '准备中', detail: '正在初始化本次运行并等待第一批结构化事件。' };
+  if (conversation.status === 'Stopping' || conversation.status === 'Stopped') {
+    return {
+      title: '运行已停止',
+      detail: '当前运行已被用户停止，节点状态保持在最后一次真实事件。',
+    };
+  }
+
+  const node = currentNode(conversation.routePlan, conversation.nodeStatus);
+  if (node) {
+    const prefix =
+      node.status === 'running'
+        ? '正在执行'
+        : node.status === 'needs_replan' || node.status === 'partial'
+          ? '等待重规划'
+          : '下一个节点';
+    return {
+      title: `${prefix}: ${node.role} / ${node.nodeId}`,
+      detail: node.goal,
+    };
+  }
+
+  if (conversation.routePlan?.nodes.length) {
+    return {
+      title: '已生成本地 DAG',
+      detail: `当前计划包含 ${conversation.routePlan.nodes.length} 个节点。`,
+    };
+  }
+
+  return {
+    title: '等待执行',
+    detail: '输入请求后，运行时会生成局部 DAG，并在这里展示节点、事件和 artifacts。',
+  };
 }
 
 export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferences }) => {
@@ -129,6 +153,7 @@ export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferenc
     Boolean(
       activeConversation.routePlan?.nodes.length ||
         activeConversation.runEvents.length ||
+        activeConversation.artifacts.length ||
         activeConversation.rawTerminalLog.trim(),
     );
   const messageWidthClass = getMessageWidthClass(uiPreferences.chatWidth);
@@ -152,7 +177,7 @@ export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferenc
       <div className="border-b border-slate-200 bg-[var(--app-bg)]/92 px-4 py-5 backdrop-blur-xl sm:px-6">
         <div className={`mx-auto flex w-full ${messageWidthClass} items-center justify-between gap-4`}>
           <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-400">当前会话</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-400">Dynamic Research OS</p>
             <h2 className="mt-2 truncate text-2xl font-semibold tracking-tight text-slate-900">
               {activeConversation.title}
             </h2>
@@ -169,13 +194,48 @@ export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferenc
           {shouldShowRunInsights ? (
             <div className="mb-8 space-y-6">
               <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-                <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-400">当前阶段</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-400">Runtime Summary</p>
                 <h3 className="mt-2 text-base font-semibold text-slate-900">{currentStage.title}</h3>
                 <p className="mt-2 text-sm leading-6 text-slate-500">{currentStage.detail}</p>
               </section>
+
               {activeConversation.routePlan?.nodes.length ? (
-                <RouteGraph routePlan={activeConversation.routePlan} roleStatus={activeConversation.roleStatus} />
+                <RouteGraph routePlan={activeConversation.routePlan} nodeStatus={activeConversation.nodeStatus} />
               ) : null}
+
+              {activeConversation.artifacts.length > 0 ? (
+                <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-400">Artifacts</p>
+                      <h3 className="mt-2 text-base font-semibold text-slate-900">产出面板</h3>
+                    </div>
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                      {activeConversation.artifacts.length} item(s)
+                    </span>
+                  </div>
+
+                  <div className="mt-5 grid gap-3 md:grid-cols-2">
+                    {activeConversation.artifacts.map((artifact) => (
+                      <div
+                        key={`${artifact.artifact_type}-${artifact.artifact_id}`}
+                        className="rounded-3xl border border-slate-200 bg-slate-50 px-4 py-3"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-medium text-emerald-700">
+                            {artifact.artifact_type}
+                          </span>
+                          <span className="font-mono text-xs text-slate-500">{artifact.artifact_id}</span>
+                        </div>
+                        <p className="mt-2 text-sm text-slate-600">
+                          {artifact.producer_role} · {artifact.producer_skill}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
               <BehaviorTimeline events={activeConversation.runEvents} />
               <RawTerminalPanel content={activeConversation.rawTerminalLog} />
             </div>
@@ -197,7 +257,7 @@ export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferenc
                         {isUser ? <User2 className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
                       </div>
                       <div className={isUser ? 'text-right' : ''}>
-                        <div className="mb-2 text-xs font-medium text-slate-400">{isUser ? '你' : '研究助手'}</div>
+                        <div className="mb-2 text-xs font-medium text-slate-400">{isUser ? '你' : 'Research OS'}</div>
                         <div
                           className={`whitespace-pre-wrap rounded-[28px] px-5 py-4 leading-7 ${
                             isUser ? 'bg-slate-900 text-white' : 'border border-slate-200 bg-white text-slate-800 shadow-sm'
@@ -219,12 +279,12 @@ export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferenc
           ) : (
             <div className="flex min-h-[56vh] flex-col items-center justify-center text-center">
               <div className="max-w-2xl">
-                <p className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">研究助手</p>
+                <p className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">Research Runtime</p>
                 <h2 className="mt-4 text-4xl font-semibold tracking-tight text-slate-900 sm:text-5xl">
-                  开始一个新的研究会话
+                  使用动态 DAG 运行研究任务
                 </h2>
                 <p className="mt-4 text-base leading-7 text-slate-500">
-                  每个会话都有独立的上下文历史。运行完成后，该会话的 planner 图会固定显示在消息区上方。
+                  输入一个研究请求后，前端会展示局部 DAG、节点状态、skill/tool 调用、observation、replan 和 artifacts。
                 </p>
               </div>
 
@@ -259,13 +319,13 @@ export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferenc
                   submitPrompt();
                 }
               }}
-              placeholder="输入评审、文献调研、规划或对比分析等请求。"
+              placeholder="输入一个研究请求，运行时会按 planner -> executor -> role -> skill -> tool 路径执行。"
               className="min-h-[104px] w-full resize-none rounded-[24px] border-0 bg-transparent px-4 py-3 text-[15px] leading-7 text-slate-900 outline-none placeholder:text-slate-400"
             />
             <div className="mt-2 flex items-center justify-between gap-3 px-2 pb-1">
               <div className="flex items-center gap-2 text-xs text-slate-400">
                 <ArrowUpRight className="h-3.5 w-3.5" />
-                <span>{isActiveConversationRunning ? '当前会话正在运行，可手动停止' : 'Enter 发送，Shift+Enter 换行'}</span>
+                <span>{isActiveConversationRunning ? '当前运行进行中，可随时停止。' : 'Enter 发送，Shift+Enter 换行。'}</span>
               </div>
               {isActiveConversationRunning ? (
                 <Button onClick={() => void stopRun()} variant="danger" className="rounded-full px-5">

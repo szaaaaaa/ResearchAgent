@@ -4,8 +4,8 @@ import { CredentialPresence } from '../../../types';
 import { Card } from '../../ui';
 
 function getRuntimeModeLabel(runtimeMode: string): string {
-  if (runtimeMode === '6-agent') {
-    return '6-agent';
+  if (runtimeMode === 'dynamic-os') {
+    return 'dynamic-os';
   }
   if (runtimeMode === 'desktop') {
     return '桌面模式';

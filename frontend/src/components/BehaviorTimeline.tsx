@@ -2,44 +2,28 @@ import React from 'react';
 import { RunEvent } from '../types';
 
 const VISIBLE_EVENTS = new Set([
-  'os_route_resolved',
-  'os_role_status',
-  'os_critic_decision',
-  'failure_routed',
-  'provider_circuit_opened',
-  'provider_circuit_open_skip',
-  'run_stopped',
+  'plan_update',
+  'node_status',
+  'skill_invoke',
+  'tool_invoke',
+  'observation',
+  'replan',
+  'artifact_created',
+  'policy_block',
+  'run_terminate',
 ]);
 
-const ROLE_LABELS: Record<string, string> = {
-  conductor: '统筹',
-  researcher: '研究',
-  experimenter: '实验',
-  analyst: '分析',
-  writer: '写作',
-  critic: '评审',
+const EVENT_STYLES: Record<string, string> = {
+  plan_update: 'bg-slate-100 text-slate-700',
+  node_status: 'bg-sky-100 text-sky-700',
+  skill_invoke: 'bg-indigo-100 text-indigo-700',
+  tool_invoke: 'bg-cyan-100 text-cyan-700',
+  observation: 'bg-amber-100 text-amber-800',
+  replan: 'bg-orange-100 text-orange-800',
+  artifact_created: 'bg-emerald-100 text-emerald-700',
+  policy_block: 'bg-rose-100 text-rose-700',
+  run_terminate: 'bg-slate-200 text-slate-700',
 };
-
-const STATUS_LABELS: Record<string, string> = {
-  pending: '待执行',
-  running: '进行中',
-  completed: '已完成',
-  pass: '通过',
-  revise: '修订',
-  waiting: '等待中',
-  skipped: '已跳过',
-  stopped: '已停止',
-  block: '阻塞',
-  failed: '失败',
-};
-
-function roleLabel(value: string): string {
-  return ROLE_LABELS[value] || value || '角色';
-}
-
-function statusLabel(value: string): string {
-  return STATUS_LABELS[value] || value || '待执行';
-}
 
 function formatTimestamp(value: string): string {
   return new Intl.DateTimeFormat('zh-CN', {
@@ -50,53 +34,82 @@ function formatTimestamp(value: string): string {
   }).format(new Date(value));
 }
 
+function eventBadgeClass(type: string): string {
+  return EVENT_STYLES[type] || 'bg-slate-100 text-slate-700';
+}
+
+function eventTypeLabel(type: string): string {
+  const labels: Record<string, string> = {
+    plan_update: 'Plan',
+    node_status: 'Node',
+    skill_invoke: 'Skill',
+    tool_invoke: 'Tool',
+    observation: 'Observation',
+    replan: 'Replan',
+    artifact_created: 'Artifact',
+    policy_block: 'Policy',
+    run_terminate: 'Terminate',
+  };
+  return labels[type] || type;
+}
+
 function describeEvent(event: RunEvent): { title: string; detail: string } {
-  switch (event.event) {
-    case 'os_route_resolved':
+  switch (event.type) {
+    case 'plan_update':
       return {
-        title: '已确定执行路径',
-        detail: event.detail || '系统已生成本次运行的角色执行路径。',
+        title: `Planner updated local DAG`,
+        detail: event.detail || `Iteration ${event.iteration ?? 0}`,
       };
-    case 'os_role_status':
+    case 'node_status':
       return {
-        title: `${roleLabel(event.role)} -> ${statusLabel(event.status)}`,
-        detail: event.detail || `第 ${event.iteration ?? 0} 轮`,
+        title: `${event.role || 'node'} / ${event.nodeId || 'unknown'} -> ${event.status || 'pending'}`,
+        detail: event.detail || '',
       };
-    case 'os_critic_decision':
+    case 'skill_invoke':
       return {
-        title: `评审结论 -> ${event.decision || 'unknown'}`,
-        detail: event.detail || `第 ${event.iteration ?? 0} 轮`,
+        title: `Invoke skill ${event.skillId || 'unknown'}`,
+        detail: [event.nodeId, event.phase].filter(Boolean).join(' · '),
       };
-    case 'failure_routed':
+    case 'tool_invoke':
       return {
-        title: '故障已路由',
-        detail: event.detail || '系统已将异常路由到对应处理路径。',
+        title: `Invoke tool ${event.toolId || 'unknown'}`,
+        detail: [event.skillId, event.phase, event.nodeId].filter(Boolean).join(' · '),
       };
-    case 'provider_circuit_opened':
+    case 'observation':
       return {
-        title: '数据源熔断开启',
-        detail: event.detail || '当前数据源连续失败，已暂时熔断。',
+        title: `Observation from ${event.role || event.nodeId || 'runtime'}`,
+        detail: event.detail || event.reason || '',
       };
-    case 'provider_circuit_open_skip':
+    case 'replan':
       return {
-        title: '数据源已跳过',
-        detail: event.detail || '数据源仍处于熔断期，本次请求已跳过。',
+        title: `Planner requested replan`,
+        detail: event.reason || event.detail || '',
       };
-    case 'run_stopped':
+    case 'artifact_created':
       return {
-        title: '运行已停止',
-        detail: event.detail || '当前会话已被手动停止。',
+        title: `Artifact created: ${event.artifactType || 'unknown'}`,
+        detail: [event.artifactId, event.producerRole, event.producerSkill].filter(Boolean).join(' · '),
+      };
+    case 'policy_block':
+      return {
+        title: `Policy blocked ${event.blockedAction || 'action'}`,
+        detail: event.reason || event.detail || '',
+      };
+    case 'run_terminate':
+      return {
+        title: `Run terminated`,
+        detail: event.reason || event.detail || '',
       };
     default:
       return {
-        title: event.event,
+        title: event.type,
         detail: event.detail || '',
       };
   }
 }
 
 export const BehaviorTimeline: React.FC<{ events: RunEvent[] }> = ({ events }) => {
-  const visibleEvents = events.filter((event) => VISIBLE_EVENTS.has(event.event));
+  const visibleEvents = events.filter((event) => VISIBLE_EVENTS.has(event.type));
   if (visibleEvents.length === 0) {
     return null;
   }
@@ -104,8 +117,8 @@ export const BehaviorTimeline: React.FC<{ events: RunEvent[] }> = ({ events }) =
   return (
     <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
       <div>
-        <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-400">行为时间线</p>
-        <h3 className="mt-2 text-base font-semibold text-slate-900">关键运行事件</h3>
+        <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-400">Timeline</p>
+        <h3 className="mt-2 text-base font-semibold text-slate-900">技能 / 工具 / 观察 / 重规划</h3>
       </div>
 
       <div className="mt-5 space-y-3">
@@ -120,7 +133,12 @@ export const BehaviorTimeline: React.FC<{ events: RunEvent[] }> = ({ events }) =
                 className="flex items-start justify-between gap-4 rounded-3xl border border-slate-200 bg-slate-50 px-4 py-3"
               >
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold text-slate-900">{description.title}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] ${eventBadgeClass(event.type)}`}>
+                      {eventTypeLabel(event.type)}
+                    </span>
+                    <p className="text-sm font-semibold text-slate-900">{description.title}</p>
+                  </div>
                   {description.detail ? <p className="mt-1 text-sm text-slate-500">{description.detail}</p> : null}
                 </div>
                 <span className="shrink-0 rounded-full bg-white px-3 py-1 text-[11px] font-medium text-slate-500 ring-1 ring-slate-200">
