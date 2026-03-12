@@ -1,14 +1,12 @@
 # ResearchAgent
 
-ResearchAgent is a local-first autonomous research agent. It turns a topic into a structured, cited report through a staged workflow built on LangGraph.
+ResearchAgent is a local-first autonomous research agent. It turns a topic into a structured, cited report through the dynamic `planner -> executor -> role -> skill -> tool` runtime.
 
 ## What remains in this repo
 
 - `scripts/run_agent.py`: main autonomous agent entrypoint
-- `scripts/fetch_arxiv.py`: utility for fetching papers into the local data store
 - `scripts/build_index.py`: utility for building or refreshing the local Chroma index
-- `scripts/smoke_test.py`: mocked end-to-end smoke test
-- `src/agent/`: orchestration, runtime, providers, plugins, reviewers, tracing
+- `src/dynamic_os/`: planner, executor, contracts, skills, tools, policy, and runtime
 - `src/ingest/`: PDF/LaTeX parsing, chunking, figure extraction, indexing helpers
 - `src/retrieval/`: embeddings, reranking, BM25 sidecar, Chroma retrieval
 - `configs/agent.yaml`: single runtime config for the current codebase
@@ -19,7 +17,7 @@ Traditional single-shot RAG mode and its dedicated scripts/configs have been rem
 
 The main workflow is:
 
-`plan -> fetch -> index -> analyze -> synthesize -> evaluate -> report`
+`planner -> executor -> role -> skill -> tool`
 
 Key properties:
 
@@ -55,9 +53,7 @@ python -m scripts.run_agent --topic "retrieval augmented generation"
 Utility scripts:
 
 ```bash
-python -m scripts.fetch_arxiv --query "retrieval augmented generation" --max_results 10
 python -m scripts.build_index --papers_dir data/papers
-python -m scripts.smoke_test
 ```
 
 ## Project Layout
@@ -68,12 +64,9 @@ ResearchAgent/
 │   └── agent.yaml
 ├── scripts/
 │   ├── run_agent.py
-│   ├── fetch_arxiv.py
 │   ├── build_index.py
-│   ├── smoke_test.py
-│   └── validate_run_outputs.py
 ├── src/
-│   ├── agent/
+│   ├── dynamic_os/
 │   ├── ingest/
 │   ├── retrieval/
 │   └── common/

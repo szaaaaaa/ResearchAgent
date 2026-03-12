@@ -5,10 +5,8 @@ ResearchAgent 是一个本地优先的自动研究 Agent。输入一个主题后
 ## 当前仓库保留的内容
 
 - `scripts/run_agent.py`：主入口，运行自动研究 Agent
-- `scripts/fetch_arxiv.py`：把论文抓到本地数据仓库
 - `scripts/build_index.py`：构建或刷新本地 Chroma 索引
-- `scripts/smoke_test.py`：使用 mock provider 的端到端冒烟测试
-- `src/agent/`：编排、运行时、provider、plugin、reviewer、trace
+- `src/dynamic_os/`：planner、executor、contracts、skills、tools、policy 与 runtime
 - `src/ingest/`：PDF/LaTeX 解析、切块、图像抽取、索引辅助
 - `src/retrieval/`：embedding、reranker、BM25 sidecar、Chroma 检索
 - `configs/agent.yaml`：当前唯一保留的运行配置
@@ -19,7 +17,7 @@ ResearchAgent 是一个本地优先的自动研究 Agent。输入一个主题后
 
 主流程：
 
-`plan -> fetch -> index -> analyze -> synthesize -> evaluate -> report`
+`planner -> executor -> role -> skill -> tool`
 
 主要特性：
 
@@ -55,9 +53,7 @@ python -m scripts.run_agent --topic "retrieval augmented generation"
 辅助脚本：
 
 ```bash
-python -m scripts.fetch_arxiv --query "retrieval augmented generation" --max_results 10
 python -m scripts.build_index --papers_dir data/papers
-python -m scripts.smoke_test
 ```
 
 ## 目录结构
@@ -68,12 +64,9 @@ ResearchAgent/
 │   └── agent.yaml
 ├── scripts/
 │   ├── run_agent.py
-│   ├── fetch_arxiv.py
 │   ├── build_index.py
-│   ├── smoke_test.py
-│   └── validate_run_outputs.py
 ├── src/
-│   ├── agent/
+│   ├── dynamic_os/
 │   ├── ingest/
 │   ├── retrieval/
 │   └── common/

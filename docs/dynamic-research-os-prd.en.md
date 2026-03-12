@@ -24,6 +24,7 @@ Where:
 - `planner` performs local planning rather than one-shot full-workflow planning
 - `skill` is a reusable task unit
 - `tool` is the lowest-level execution unit, primarily MCP tools and approved execution backends
+- tools are discovered at startup from configured MCP servers and exposed through a modular `ToolGateway`
 
 ## 2. Problem Statement
 
@@ -72,6 +73,7 @@ The first version does not aim to:
 
 - dynamic routing happens at the role layer
 - real execution happens at the tool layer, through `skills`
+- `planner` routes roles and skills, but does not directly schedule raw tools
 
 ### 5.3 Local Planning
 
@@ -135,17 +137,21 @@ Users should be able to add new `skills` without modifying the core runtime, as 
 
 ### 8.4 Tool Layer
 
-- `FR-15` `skills` must be able to call `MCP tools`
-- `FR-16` The system must support code execution in sandboxed and explicitly approved remote environments
-- `FR-17` The system may search the network and autonomously choose retrieval sources within policy limits
+- `FR-15` `skills` must be able to call `MCP tools` through `ToolGateway`
+- `FR-16` The tool layer must be MCP-first and must discover tool capabilities from configured MCP servers at startup
+- `FR-17` `ToolGateway` must be split by concern instead of becoming a single monolithic file
+- `FR-18` `planner` must not directly assign or invoke raw tools; concrete tool choice happens inside `skill` execution
+- `FR-19` The system must support code execution in sandboxed and explicitly approved remote environments
+- `FR-20` The system may search the network and autonomously choose retrieval sources within policy limits
+- `FR-21` v1 only requires startup discovery; hot-plugging or runtime reload of tools is out of scope
 
 ### 8.5 Safety and Policy
 
-- `FR-18` The runtime must enforce a strict permission policy
-- `FR-19` Dangerous commands must be blocked
-- `FR-20` Arbitrary file deletion must be blocked
-- `FR-21` Runtime configuration must be read-only
-- `FR-22` The system must enforce a maximum iteration budget
+- `FR-22` The runtime must enforce a strict permission policy
+- `FR-23` Dangerous commands must be blocked
+- `FR-24` Arbitrary file deletion must be blocked
+- `FR-25` Runtime configuration must be read-only
+- `FR-26` The system must enforce a maximum iteration budget
 
 ## 9. Skill Package Format
 
@@ -164,6 +170,7 @@ File meanings:
 - `skill.yaml`
   - machine-readable specification
   - declares the `skill id`, version, applicable roles, input/output contract, allowed tools, and permission requirements
+  - `allowed_tools` should reference normalized MCP-backed tool ids exposed through `ToolGateway`
 - `skill.md`
   - human-readable documentation
   - explains when to use the skill, expected behavior, boundaries, and failure modes
@@ -242,7 +249,7 @@ The first release must include:
 - the six roles above
 - role-based `skill allowlists`
 - locally discoverable user `skills`
-- tool execution through `MCP` and approved execution backends
+- startup MCP tool discovery and tool execution through a modular `ToolGateway`
 - a `planner-observation-executor` replanning loop
 - planner-inserted `reviewer`
 - budget and permission enforcement
@@ -259,4 +266,3 @@ The key distinction is:
 - roles own bounded execution
 - `skills` own reusable task logic
 - `tools` own low-level action execution
-
