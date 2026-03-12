@@ -165,6 +165,17 @@ def _role_model_summary(cfg: dict) -> dict[str, dict[str, str]]:
     return summary
 
 
+def _planner_model_summary(cfg: dict) -> dict[str, str]:
+    llm_cfg = cfg.get("llm", {}) if isinstance(cfg.get("llm", {}), dict) else {}
+    agent_cfg = cfg.get("agent", {}) if isinstance(cfg.get("agent", {}), dict) else {}
+    routing_cfg = agent_cfg.get("routing", {}) if isinstance(agent_cfg.get("routing", {}), dict) else {}
+    planner_cfg = routing_cfg.get("planner_llm", {}) if isinstance(routing_cfg.get("planner_llm", {}), dict) else {}
+    return {
+        "provider": str(planner_cfg.get("provider") or llm_cfg.get("provider") or ""),
+        "model": str(planner_cfg.get("model") or llm_cfg.get("model") or ""),
+    }
+
+
 def main() -> None:
     args = parse_args()
     topic_label = args.topic or f"(resume:{args.resume_run_id})"
@@ -246,13 +257,18 @@ def main() -> None:
     if args.resume_run_id:
         logger.info("Resume run id: %s", args.resume_run_id)
     logger.info("Mode: %s", args.mode)
-    logger.info("Default model: %s", cfg.get("llm", {}).get("model", "gpt-4.1-mini"))
     if args.mode == "os":
+        planner_summary = _planner_model_summary(cfg)
+        logger.info(
+            "Route planner model: %s / %s",
+            planner_summary.get("provider", ""),
+            planner_summary.get("model", ""),
+        )
         role_summary = _role_model_summary(cfg)
         for role_id in ROLE_IDS:
             role_info = role_summary.get(role_id, {})
             logger.info(
-                "Role model [%s]: %s / %s",
+                "Effective role model [%s]: %s / %s",
                 role_id,
                 role_info.get("provider", ""),
                 role_info.get("model", ""),
@@ -331,6 +347,7 @@ def main() -> None:
         "experiment_results": sget(final_state, "experiment_results", {}),
         "route_mode": final_state.get("route_mode", ""),
         "route_plan": final_state.get("route_plan", {}),
+        "role_status": final_state.get("role_status", {}),
         "await_experiment_results": await_experiment_results,
         "status": final_state.get("status", ""),
         "iteration": final_state.get("iteration", 0),

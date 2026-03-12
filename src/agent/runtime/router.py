@@ -5,7 +5,7 @@ from copy import deepcopy
 from typing import Any, Iterable
 
 from src.agent.core.schemas import RoleId, RouteEdge, RoutePlan
-from src.agent.prompts import ROUTE_PLANNER_SYSTEM, ROUTE_PLANNER_USER
+from src.agent.prompts import ROUTE_PLANNER_REVISION_BLOCK, ROUTE_PLANNER_SYSTEM, ROUTE_PLANNER_USER
 from src.agent.providers.llm_provider import call_llm
 from src.agent.stages.runtime import parse_json
 
@@ -32,14 +32,14 @@ _SUPPORTED_MODES = {
 _SUPPORTED_PROVIDERS = {"gemini", "openai", "claude", "openrouter", "siliconflow"}
 
 
-def _normalize_role_list(value: Iterable[str] | None) -> list[RoleId]:
+def _normalize_role_list(value: Iterable[str] | None, *, force_conductor: bool = True) -> list[RoleId]:
     seen: set[str] = set()
     for item in value or []:
         role_id = str(item or "").strip().lower()
         if not role_id or role_id not in _ROLE_SET or role_id in seen:
             continue
         seen.add(role_id)
-    if "researcher" in seen and "conductor" not in seen:
+    if force_conductor and "researcher" in seen and "conductor" not in seen:
         seen.add("conductor")
     return [role_id for role_id in ROLE_EXECUTION_ORDER if role_id in seen]
 
@@ -90,8 +90,8 @@ def _normalize_edges(nodes: list[RoleId], value: Iterable[dict[str, Any]] | None
     return edges
 
 
-def _route_plan(mode: str, rationale: list[str], nodes: Iterable[str], edges: Iterable[dict[str, Any]] | None = None) -> RoutePlan:
-    normalized_nodes = _normalize_role_list(nodes)
+def _route_plan(mode: str, rationale: list[str], nodes: Iterable[str], edges: Iterable[dict[str, Any]] | None = None, *, force_conductor: bool = True) -> RoutePlan:
+    normalized_nodes = _normalize_role_list(nodes, force_conductor=force_conductor)
     return {
         "mode": mode,
         "rationale": rationale,
@@ -128,13 +128,27 @@ def _build_planner_cfg(cfg: dict[str, Any] | None) -> tuple[dict[str, Any], str,
     return resolved_cfg, model, temperature
 
 
-def _resolve_llm_route_plan(*, topic: str, user_request: str, cfg: dict[str, Any] | None) -> RoutePlan:
+def _resolve_llm_route_plan(
+    *,
+    topic: str,
+    user_request: str,
+    cfg: dict[str, Any] | None,
+    revision_context: dict[str, Any] | None = None,
+) -> RoutePlan:
     planner_cfg, model, temperature = _build_planner_cfg(cfg)
     user_prompt = ROUTE_PLANNER_USER.format(
         topic=str(topic or "").strip(),
         user_request=str(user_request or "").strip(),
         available_roles=", ".join(ROLE_EXECUTION_ORDER),
     )
+    if revision_context:
+        issues = revision_context.get("critic_issues", [])
+        user_prompt += ROUTE_PLANNER_REVISION_BLOCK.format(
+            iteration=revision_context.get("iteration", "?"),
+            previous_nodes=", ".join(revision_context.get("previous_nodes", [])),
+            critic_decision=revision_context.get("critic_decision", "revise"),
+            critic_issues="\n".join(f"- {issue}" for issue in issues) if issues else "- (none provided)",
+        )
     try:
         raw_response = call_llm(
             system_prompt=ROUTE_PLANNER_SYSTEM,
@@ -144,7 +158,8 @@ def _resolve_llm_route_plan(*, topic: str, user_request: str, cfg: dict[str, Any
             temperature=temperature,
         )
         payload = parse_json(raw_response)
-        nodes = _normalize_role_list(payload.get("nodes", []))
+        is_revision = revision_context is not None
+        nodes = _normalize_role_list(payload.get("nodes", []), force_conductor=not is_revision)
         if not nodes:
             raise ValueError("Planner route did not include any valid roles")
         mode = str(payload.get("mode", "llm_route")).strip().lower() or "llm_route"
@@ -157,7 +172,7 @@ def _resolve_llm_route_plan(*, topic: str, user_request: str, cfg: dict[str, Any
         ]
         if not rationale:
             rationale = ["Planner LLM selected a role sequence from the user request."]
-        return _route_plan(mode, rationale, nodes, payload.get("edges", []))
+        return _route_plan(mode, rationale, nodes, payload.get("edges", []), force_conductor=not is_revision)
     except Exception as exc:
         logger.error(
             "Route planner LLM failed (provider=%s, model=%s)",
@@ -173,7 +188,14 @@ def resolve_route_plan(
     user_request: str,
     route_roles: Iterable[str] | None = None,
     cfg: dict[str, Any] | None = None,
+    revision_context: dict[str, Any] | None = None,
 ) -> RoutePlan:
+    # On revision passes, always use LLM routing to get a targeted sub-DAG.
+    if revision_context:
+        return _resolve_llm_route_plan(
+            topic=topic, user_request=user_request, cfg=cfg, revision_context=revision_context,
+        )
+
     explicit_roles = _normalize_role_list(route_roles)
     if explicit_roles:
         return _route_plan(

@@ -52,7 +52,9 @@ ROUTE_PLANNER_SYSTEM = (
     "- Include conductor when the request needs planning or retrieval setup.\n"
     "- Use analyst only when experiment results already exist or must be interpreted.\n"
     "- Use experimenter only when the user asks for experiment design or execution.\n"
-    "- If the request is just a literature review/report, writer should be a terminal node.\n\n"
+    "- If the request is just a literature review/report, writer should be a terminal node.\n"
+    "- On a REVISION pass, only include roles that need to re-run based on the critic feedback. "
+    "Skip roles whose output was already satisfactory.\n\n"
     "Return exactly this schema:\n"
     "{\n"
     '  "mode": "<short route label>",\n'
@@ -67,6 +69,15 @@ ROUTE_PLANNER_USER = (
     "User request: {user_request}\n"
     "Available roles: {available_roles}\n\n"
     "Choose the best execution DAG for this request."
+)
+
+ROUTE_PLANNER_REVISION_BLOCK = (
+    "\n\n--- REVISION CONTEXT ---\n"
+    "This is iteration {iteration}. The previous route used nodes: {previous_nodes}.\n"
+    "Critic decision: {critic_decision}\n"
+    "Critic issues:\n{critic_issues}\n"
+    "Re-plan the DAG to address ONLY the issues above. "
+    "Skip roles whose prior output was acceptable."
 )
 
 # ── Paper Analysis ───────────────────────────────────────────────────

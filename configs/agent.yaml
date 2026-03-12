@@ -106,7 +106,7 @@ index:
   overlap: 200
 agent:
   seed: 42
-  max_iterations: 2
+  max_iterations: 5
   papers_per_query: 5
   max_queries_per_iteration: 3
   top_k_for_analysis: 10

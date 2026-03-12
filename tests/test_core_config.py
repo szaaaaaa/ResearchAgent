@@ -352,7 +352,7 @@ class CoreConfigTest(unittest.TestCase):
             "Qwen/Qwen2.5-7B-Instruct",
         )
 
-    def test_conductor_role_syncs_top_level_llm_defaults(self) -> None:
+    def test_conductor_role_does_not_overwrite_top_level_llm_defaults(self) -> None:
         out = normalize_and_validate_config(
             {
                 "llm": {
@@ -365,9 +365,9 @@ class CoreConfigTest(unittest.TestCase):
             }
         )
 
-        self.assertEqual(out["llm"]["provider"], "gemini")
-        self.assertEqual(out["llm"]["model"], "gemini-3-pro-preview")
-        self.assertEqual(out["providers"]["llm"]["backend"], "gemini_chat")
+        self.assertEqual(out["llm"]["provider"], "openai")
+        self.assertEqual(out["llm"]["model"], "gpt-4o")
+        self.assertEqual(out["providers"]["llm"]["backend"], "openai_chat")
 
     def test_apply_role_llm_overrides_uses_core_role_fallbacks(self) -> None:
         cfg = normalize_and_validate_config(

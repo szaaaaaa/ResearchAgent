@@ -289,16 +289,6 @@ def normalize_and_validate_config(cfg: Dict[str, Any] | None) -> Dict[str, Any]:
         else:
             role_cfg["temperature"] = float(role_cfg["temperature"])
 
-    conductor_role_cfg = role_models_cfg.get("conductor", {})
-    if isinstance(conductor_role_cfg, dict):
-        conductor_provider = str(conductor_role_cfg.get("provider", "")).strip().lower()
-        conductor_model = str(conductor_role_cfg.get("model", "")).strip()
-        if conductor_provider in _LLM_BACKEND_BY_PROVIDER:
-            llm_cfg["provider"] = conductor_provider
-            out.setdefault("providers", {}).setdefault("llm", {})["backend"] = _LLM_BACKEND_BY_PROVIDER[conductor_provider]
-        if conductor_model:
-            llm_cfg["model"] = conductor_model
-
     providers_cfg = out.setdefault("providers", {})
     providers_llm_cfg = providers_cfg.setdefault("llm", {})
     if not providers_llm_cfg.get("backend"):

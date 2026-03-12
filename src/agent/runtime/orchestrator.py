@@ -132,10 +132,26 @@ def _dedupe_keep_order(values: list[str]) -> list[str]:
     return out
 
 
-def _set_role_status(state: ResearchState, role_id: str, status: str) -> None:
+def _emit_role_status_event(cfg: dict[str, Any], state: ResearchState, role_id: str, status: str) -> None:
+    emit_event(
+        cfg,
+        {
+            "event": "os_role_status",
+            "run_id": state.get("run_id", ""),
+            "role": role_id,
+            "status": status,
+            "iteration": int(state.get("iteration", 0)),
+        },
+    )
+
+
+def _set_role_status(state: ResearchState, role_id: str, status: str, *, cfg: dict[str, Any] | None = None) -> None:
     role_status = state.setdefault("role_status", {})
     if isinstance(role_status, dict):
+        previous = str(role_status.get(role_id, "") or "")
         role_status[role_id] = status
+        if cfg is not None and previous != status:
+            _emit_role_status_event(cfg, state, role_id, status)
     state["active_role"] = role_id
 
 
@@ -143,7 +159,12 @@ def _sync_artifact_records(state: ResearchState) -> None:
     state["artifacts"] = [artifact.to_record() for artifact in state.get("_artifact_objects", [])]
 
 
-def _set_unselected_role_statuses(state: ResearchState, nodes: list[str]) -> None:
+def _set_unselected_role_statuses(
+    state: ResearchState,
+    nodes: list[str],
+    *,
+    cfg: dict[str, Any] | None = None,
+) -> None:
     selected = {str(role_id).strip().lower() for role_id in nodes}
     for role_id in _ROLE_ORDER:
         role_status = state.setdefault("role_status", {})
@@ -152,13 +173,23 @@ def _set_unselected_role_statuses(state: ResearchState, nodes: list[str]) -> Non
         if role_id in selected:
             if role_status.get(role_id) == "skipped":
                 role_status[role_id] = "pending"
+                if cfg is not None:
+                    _emit_role_status_event(cfg, state, role_id, "pending")
             continue
+        previous = str(role_status.get(role_id, "") or "")
         role_status[role_id] = "skipped"
+        if cfg is not None and previous != "skipped":
+            _emit_role_status_event(cfg, state, role_id, "skipped")
 
 
-def _mark_remaining_roles_waiting(state: ResearchState, remaining_roles: list[str]) -> None:
+def _mark_remaining_roles_waiting(
+    state: ResearchState,
+    remaining_roles: list[str],
+    *,
+    cfg: dict[str, Any] | None = None,
+) -> None:
     for role_id in remaining_roles:
-        _set_role_status(state, role_id, "waiting")
+        _set_role_status(state, role_id, "waiting", cfg=cfg)
 
 
 def _topological_roles(route_plan: dict[str, Any]) -> list[str]:
@@ -355,26 +386,26 @@ class ResearchOrchestrator:
 
         for role_id in execution_order:
             if role_id == "conductor":
-                _set_role_status(state, "conductor", "running")
+                _set_role_status(state, "conductor", "running", cfg=self.cfg)
                 planned_skills = agents["conductor"].plan(self.context)
                 route_plan["planned_skills"] = list(planned_skills)
                 state["route_plan"] = route_plan
                 artifacts = list(state.get("_artifact_objects", artifacts))
-                _set_role_status(state, "conductor", "completed")
+                _set_role_status(state, "conductor", "completed", cfg=self.cfg)
                 logger.info("[ResearchOrchestrator] Planned skills: %s", ", ".join(planned_skills))
                 continue
 
             if role_id == "researcher":
-                _set_role_status(state, "researcher", "running")
+                _set_role_status(state, "researcher", "running", cfg=self.cfg)
                 artifacts = agents["researcher"].execute_plan(planned_skills, artifacts)
-                _set_role_status(state, "researcher", "completed")
+                _set_role_status(state, "researcher", "completed", cfg=self.cfg)
                 _sync_artifact_records(state)
                 continue
 
             if role_id == "critic":
-                _set_role_status(state, "critic", "running")
+                _set_role_status(state, "critic", "running", cfg=self.cfg)
                 decision, critique_report = agents["critic"].evaluate(artifacts)
-                _set_role_status(state, "critic", decision)
+                _set_role_status(state, "critic", decision, cfg=self.cfg)
                 state["iteration"] = self.context.iteration
                 _sync_artifact_records(state)
                 emit_event(
@@ -392,12 +423,16 @@ class ResearchOrchestrator:
                 continue
 
             if role_id == "experimenter":
-                _set_role_status(state, "experimenter", "running")
+                _set_role_status(state, "experimenter", "running", cfg=self.cfg)
                 artifacts = agents["experimenter"].design(artifacts)
-                _set_role_status(state, "experimenter", "completed")
+                _set_role_status(state, "experimenter", "completed", cfg=self.cfg)
                 _sync_artifact_records(state)
                 if hitl_gate(state):
-                    _mark_remaining_roles_waiting(state, _descendant_roles(route_plan, "experimenter"))
+                    _mark_remaining_roles_waiting(
+                        state,
+                        _descendant_roles(route_plan, "experimenter"),
+                        cfg=self.cfg,
+                    )
                     return "pass", True
                 continue
 
@@ -407,18 +442,18 @@ class ResearchOrchestrator:
                 if isinstance(experiment_results, dict):
                     results_status = str(experiment_results.get("status", "")).strip().lower()
                 if results_status == "validated":
-                    _set_role_status(state, "analyst", "running")
+                    _set_role_status(state, "analyst", "running", cfg=self.cfg)
                     artifacts = agents["analyst"].analyze(artifacts)
-                    _set_role_status(state, "analyst", "completed")
+                    _set_role_status(state, "analyst", "completed", cfg=self.cfg)
                     _sync_artifact_records(state)
                 else:
-                    _set_role_status(state, "analyst", "skipped")
+                    _set_role_status(state, "analyst", "skipped", cfg=self.cfg)
                 continue
 
             if role_id == "writer":
-                _set_role_status(state, "writer", "running")
+                _set_role_status(state, "writer", "running", cfg=self.cfg)
                 artifacts = agents["writer"].write(artifacts)
-                _set_role_status(state, "writer", "completed")
+                _set_role_status(state, "writer", "completed", cfg=self.cfg)
                 _sync_artifact_records(state)
                 continue
 
@@ -444,6 +479,7 @@ class ResearchOrchestrator:
             max_iterations=self.context.max_iterations,
         )
         retries = 0
+        revision_context: dict[str, Any] | None = None
 
         while True:
             allowed, reason = budget_guard_allows(self.context)
@@ -457,12 +493,25 @@ class ResearchOrchestrator:
                 user_request=resolved_user_request,
                 route_roles=route_roles,
                 cfg=self.cfg,
+                revision_context=revision_context,
             )
             state["route_mode"] = str(route_plan.get("mode", "auto"))
             state["route_plan"] = route_plan
             _set_unselected_role_statuses(
                 state,
                 [str(role_id) for role_id in route_plan.get("nodes", [])],
+                cfg=self.cfg,
+            )
+            emit_event(
+                self.cfg,
+                {
+                    "event": "os_route_resolved",
+                    "run_id": self.context.run_id,
+                    "mode": state["route_mode"],
+                    "nodes": [str(role_id) for role_id in route_plan.get("nodes", [])],
+                    "edges": [edge for edge in route_plan.get("edges", []) if isinstance(edge, dict)],
+                    "iteration": self.context.iteration,
+                },
             )
 
             agents = self._create_agents(state)
@@ -523,3 +572,16 @@ class ResearchOrchestrator:
             retries += 1
             self.context.iteration += 1
             state["iteration"] = self.context.iteration
+
+            # Build revision context so the planner can produce a targeted sub-DAG.
+            review = state.get("review", {})
+            retrieval_review = review.get("retrieval_review", {}) if isinstance(review, dict) else {}
+            critic_issues: list[str] = []
+            if isinstance(retrieval_review, dict):
+                critic_issues = [str(i) for i in retrieval_review.get("issues", []) if str(i).strip()]
+            revision_context = {
+                "iteration": self.context.iteration,
+                "previous_nodes": [str(n) for n in route_plan.get("nodes", [])],
+                "critic_decision": decision,
+                "critic_issues": critic_issues,
+            }
