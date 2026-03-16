@@ -1,10 +1,13 @@
 import React from 'react';
 
-export const RawTerminalPanel: React.FC<{ content: string }> = ({ content }) => {
+export const RawTerminalPanel: React.FC<{ content: string; defaultOpen?: boolean }> = ({
+  content,
+  defaultOpen = false,
+}) => {
   const text = String(content || '').trim();
   return (
     <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-      <details className="group">
+      <details className="group" open={defaultOpen}>
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-400">原始终端信息</p>

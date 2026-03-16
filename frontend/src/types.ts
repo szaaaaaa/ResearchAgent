@@ -1,4 +1,4 @@
-export type AgentRoleId = 'conductor' | 'researcher' | 'experimenter' | 'analyst' | 'writer' | 'critic';
+export type AgentRoleId = 'conductor' | 'researcher' | 'experimenter' | 'analyst' | 'writer' | 'reviewer';
 export type ChatMessageRole = 'user' | 'assistant' | 'system';
 
 export interface SelectOption {
@@ -10,6 +10,23 @@ export interface AgentModelConfig {
   provider: string;
   model: string;
   temperature?: number;
+}
+
+export interface OpenAICodexAuthBinding {
+  default_profile: string;
+  allowed_profiles: string[];
+  locked: boolean;
+  require_explicit_switch: boolean;
+}
+
+export interface CodexProfileSummary {
+  profile_id: string;
+  user_label: string;
+  user_name: string;
+  user_email: string;
+  plan_type: string;
+  account_id: string;
+  updated_at: number;
 }
 
 export interface Credentials {
@@ -35,6 +52,9 @@ export interface CredentialPresence {
 export type CredentialStatusMap = Record<keyof Credentials, CredentialPresence>;
 
 export interface ProjectConfig {
+  auth: {
+    openai_codex: OpenAICodexAuthBinding;
+  };
   providers: {
     llm: {
       backend: string;
@@ -61,6 +81,10 @@ export interface ProjectConfig {
     provider: string;
     model: string;
     temperature: number;
+    openai_codex: {
+      transport: string;
+      model_discovery: string;
+    };
     role_models: Record<AgentRoleId, AgentModelConfig>;
   };
   retrieval: {
@@ -112,7 +136,9 @@ export interface ProjectConfig {
     limits: { analysis_web_content_max_chars: number };
     topic_filter: { min_keyword_hits: number; min_anchor_hits: number; include_terms: string[]; block_terms: string[] };
     experiment_plan: { enabled: boolean; max_per_rq: number; require_human_results: boolean };
-    checkpointing: { enabled: boolean; backend: string; sqlite_path: string };
+    routing: {
+      planner_llm: AgentModelConfig;
+    };
   };
   ingest: {
     text_extraction: string;
@@ -228,9 +254,36 @@ export interface ProviderModelCatalog {
   error?: string;
 }
 
+export interface CodexStatus {
+  installed: boolean;
+  logged_in: boolean;
+  chatgpt_logged_in: boolean;
+  auth_mode: string;
+  executable: string;
+  available: boolean;
+  active_profile: string;
+  default_profile: string;
+  allowed_profiles: string[];
+  profile_locked: boolean;
+  require_explicit_switch: boolean;
+  available_profiles: CodexProfileSummary[];
+  user_name: string;
+  user_email: string;
+  user_label: string;
+  plan_type: string;
+  account_id: string;
+  expires_at: number;
+  expires_in_sec: number;
+  expired: boolean;
+  has_refresh_token: boolean;
+  login_in_progress: boolean;
+  last_error: string;
+}
+
 export interface AppState {
   credentials: Credentials;
   credentialStatus: CredentialStatusMap;
+  codexStatus: CodexStatus;
   runtimeMode: string;
   projectConfig: ProjectConfig;
   hasUnsavedModelChanges: boolean;
@@ -238,6 +291,7 @@ export interface AppState {
   conversations: ChatSession[];
   activeConversationId: string;
   isRunInProgress: boolean;
+  codexCatalog: ProviderModelCatalog;
   openaiCatalog: ProviderModelCatalog;
   geminiCatalog: ProviderModelCatalog;
   openrouterCatalog: ProviderModelCatalog;

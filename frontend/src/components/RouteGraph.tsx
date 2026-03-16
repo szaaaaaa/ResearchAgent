@@ -2,12 +2,25 @@ import React from 'react';
 import { NodeStatusMap, RoutePlan } from '../types';
 
 const ROLE_LABELS: Record<string, string> = {
-  conductor: 'Conductor',
-  researcher: 'Researcher',
-  experimenter: 'Experimenter',
-  analyst: 'Analyst',
-  writer: 'Writer',
-  reviewer: 'Reviewer',
+  conductor: '统筹',
+  researcher: '研究',
+  experimenter: '实验',
+  analyst: '分析',
+  writer: '写作',
+  reviewer: '审阅',
+};
+
+const SKILL_LABELS: Record<string, string> = {
+  plan_research: '规划研究',
+  search_papers: '检索论文',
+  fetch_fulltext: '抓取全文',
+  extract_notes: '提取笔记',
+  build_evidence_map: '构建证据图谱',
+  design_experiment: '设计实验',
+  run_experiment: '执行实验',
+  analyze_metrics: '分析指标',
+  draft_report: '撰写报告',
+  review_artifact: '审阅产出',
 };
 
 const ROLE_COLORS: Record<string, string> = {
@@ -34,22 +47,26 @@ function roleLabel(roleId: string): string {
   return ROLE_LABELS[roleId] || roleId;
 }
 
+function skillLabel(skillId: string): string {
+  return SKILL_LABELS[skillId] || skillId;
+}
+
 function roleColor(roleId: string): string {
   return ROLE_COLORS[roleId] || '#475569';
 }
 
 function statusLabel(status: string): string {
   const labels: Record<string, string> = {
-    pending: 'Pending',
-    running: 'Running',
-    success: 'Success',
-    partial: 'Partial',
-    needs_replan: 'Needs Replan',
-    failed: 'Failed',
-    skipped: 'Skipped',
-    stopped: 'Stopped',
+    pending: '等待中',
+    running: '执行中',
+    success: '成功',
+    partial: '部分完成',
+    needs_replan: '需要重规划',
+    failed: '失败',
+    skipped: '已跳过',
+    stopped: '已停止',
   };
-  return labels[status] || status || 'Pending';
+  return labels[status] || status || '等待中';
 }
 
 function statusClass(status: string): string {
@@ -76,11 +93,11 @@ export const RouteGraph: React.FC<{ routePlan: RoutePlan; nodeStatus?: NodeStatu
     <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-400">Local DAG</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-400">局部执行图</p>
           <h3 className="mt-2 text-base font-semibold text-slate-900">动态执行图</h3>
         </div>
         <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-          Iteration {routePlan.planning_iteration} · {routePlan.horizon} node(s)
+          第 {routePlan.planning_iteration} 轮 · {routePlan.horizon} 个节点
         </span>
       </div>
 
@@ -115,7 +132,7 @@ export const RouteGraph: React.FC<{ routePlan: RoutePlan; nodeStatus?: NodeStatu
                     markerEnd="url(#route-arrow)"
                   />
                   <text x={midX} y={y - 10} textAnchor="middle" className="fill-slate-400 text-[11px]">
-                    {edge.condition || 'on_success'}
+                    {edge.condition === 'on_success' ? '成功后' : edge.condition === 'on_failure' ? '失败后' : '始终'}
                   </text>
                 </g>
               );
@@ -137,7 +154,9 @@ export const RouteGraph: React.FC<{ routePlan: RoutePlan; nodeStatus?: NodeStatu
                     <span className="inline-flex h-3.5 w-3.5 rounded-full" style={{ backgroundColor: accent }} />
                     <span className="text-sm font-semibold text-slate-900">{roleLabel(node.role)}</span>
                   </div>
-                  <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${statusClass(status)}`}>
+                  <span
+                    className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${statusClass(status)}`}
+                  >
                     {statusLabel(status)}
                   </span>
                 </div>
@@ -148,12 +167,12 @@ export const RouteGraph: React.FC<{ routePlan: RoutePlan; nodeStatus?: NodeStatu
                 <div className="mt-3 flex flex-wrap gap-2">
                   {node.allowed_skills.map((skillId) => (
                     <span key={skillId} className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] text-slate-600">
-                      {skillId}
+                      {skillLabel(skillId)}
                     </span>
                   ))}
                   {node.role === 'reviewer' || node.needs_review ? (
                     <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-medium text-amber-800">
-                      Reviewer Inserted
+                      已插入审阅节点
                     </span>
                   ) : null}
                 </div>
@@ -165,7 +184,7 @@ export const RouteGraph: React.FC<{ routePlan: RoutePlan; nodeStatus?: NodeStatu
 
       {routePlan.planner_notes.length > 0 ? (
         <div className="mt-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">Planner Notes</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">规划备注</p>
           <div className="mt-2 flex flex-wrap gap-2">
             {routePlan.planner_notes.map((item) => (
               <span key={item} className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">

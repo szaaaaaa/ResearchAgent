@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowUpRight, Bot, LoaderCircle, SendHorizonal, Square, User2 } from 'lucide-react';
+import { AlertCircle, ArrowUpRight, Bot, LoaderCircle, SendHorizonal, Square, User2 } from 'lucide-react';
 import { useAppContext } from '../../store';
 import { NodeStatusMap, RoutePlan, RunArtifact } from '../../types';
 import { Button } from '../ui';
@@ -7,6 +7,38 @@ import { UiPreferences } from '../settings/types';
 import { RouteGraph } from '../RouteGraph';
 import { BehaviorTimeline } from '../BehaviorTimeline';
 import { RawTerminalPanel } from '../RawTerminalPanel';
+
+const RUN_TAB_ROLE_LABELS: Record<string, string> = {
+  conductor: '统筹',
+  researcher: '研究',
+  experimenter: '实验',
+  analyst: '分析',
+  writer: '写作',
+  reviewer: '审阅',
+};
+
+const RUN_TAB_ARTIFACT_LABELS: Record<string, string> = {
+  TopicBrief: '主题简报',
+  SearchPlan: '检索计划',
+  SourceSet: '来源集合',
+  PaperNotes: '论文笔记',
+  EvidenceMap: '证据图谱',
+  GapMap: '缺口图谱',
+  ExperimentPlan: '实验方案',
+  ExperimentResults: '实验结果',
+  ExperimentAnalysis: '实验分析',
+  PerformanceMetrics: '性能指标',
+  ResearchReport: '研究报告',
+  ReviewVerdict: '审阅结论',
+};
+
+function runTabRoleLabel(roleId: string): string {
+  return RUN_TAB_ROLE_LABELS[roleId] || roleId;
+}
+
+function runTabArtifactLabel(artifactType: string): string {
+  return RUN_TAB_ARTIFACT_LABELS[artifactType] || artifactType;
+}
 
 const PROMPT_TEMPLATES = [
   '为一个关于动态研究智能体系统的主题生成最小研究闭环。',
@@ -95,13 +127,13 @@ function summarizeCurrentStage(conversation: {
   if (conversation.status === 'Completed') {
     return {
       title: '运行完成',
-      detail: `已完成本次动态路由执行，累计产出 ${conversation.artifacts.length} 个 artifacts。`,
+      detail: `已完成本次动态执行，累计产出 ${conversation.artifacts.length} 个产物。`,
     };
   }
   if (conversation.status === 'Failed') {
     return {
       title: '运行失败',
-      detail: '执行链路被中断，请结合下方时间线查看 observation、policy block 或 replan 事件。',
+      detail: '执行链路被中断，请结合下方时间线查看观察事件、策略拦截或重规划原因。',
     };
   }
   if (conversation.status === 'Stopping' || conversation.status === 'Stopped') {
@@ -120,27 +152,72 @@ function summarizeCurrentStage(conversation: {
           ? '等待重规划'
           : '下一个节点';
     return {
-      title: `${prefix}: ${node.role} / ${node.nodeId}`,
+      title: `${prefix}：${runTabRoleLabel(node.role)} / ${node.nodeId}`,
       detail: node.goal,
     };
   }
 
   if (conversation.routePlan?.nodes.length) {
     return {
-      title: '已生成本地 DAG',
+      title: '已生成局部执行图',
       detail: `当前计划包含 ${conversation.routePlan.nodes.length} 个节点。`,
     };
   }
 
   return {
     title: '等待执行',
-    detail: '输入请求后，运行时会生成局部 DAG，并在这里展示节点、事件和 artifacts。',
+    detail: '输入请求后，运行时会生成局部执行图，并在这里展示节点、事件和产物。',
+  };
+}
+
+function latestFailureSummary(conversation: {
+  status: string;
+  artifacts: RunArtifact[];
+  runEvents: Array<{
+    type: string;
+    nodeId: string;
+    role: string;
+    status: string;
+    reason: string;
+    detail: string;
+  }>;
+}): { title: string; detail: string; artifacts: string[] } | null {
+  if (conversation.status !== 'Failed' && conversation.status !== 'Stopped') {
+    return null;
+  }
+
+  const failureEvent =
+    [...conversation.runEvents]
+      .reverse()
+      .find(
+        (event) =>
+          (event.type === 'observation' &&
+            ['failed', 'needs_replan', 'partial'].includes(String(event.status || '').toLowerCase())) ||
+          event.type === 'run_terminate' ||
+          event.type === 'replan',
+      ) || null;
+
+  const titleParts = [
+    failureEvent?.role ? runTabRoleLabel(failureEvent.role) : '',
+    failureEvent?.nodeId || '',
+  ].filter(Boolean);
+  const detail =
+    String(failureEvent?.detail || failureEvent?.reason || '').trim() ||
+    'This run stopped before producing a final ResearchReport.';
+
+  return {
+    title: titleParts.length > 0 ? `Last Failure: ${titleParts.join(' / ')}` : 'No Final ResearchReport',
+    detail,
+    artifacts: conversation.artifacts.map(
+      (artifact) => `${runTabArtifactLabel(artifact.artifact_type)} (${artifact.artifact_id})`,
+    ),
   };
 }
 
 export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferences }) => {
   const { state, updateRunOverrides, startRun, stopRun } = useAppContext();
   const { conversations, activeConversationId, runOverrides } = state;
+  const [runStartError, setRunStartError] = React.useState('');
   const activeConversation =
     conversations.find((conversation) => conversation.id === activeConversationId) ?? conversations[0];
   const isActiveConversationRunning =
@@ -164,20 +241,59 @@ export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferenc
     : [];
   const messageFontClass = uiPreferences.messageFont === 'large' ? 'text-[15px]' : 'text-sm';
   const currentStage = summarizeCurrentStage(activeConversation);
+  const failureSummary = latestFailureSummary(activeConversation);
 
-  const submitPrompt = () => {
+  const submitPrompt = async () => {
     if (isActiveConversationRunning) {
       return;
     }
-    void startRun();
+    try {
+      await startRun();
+    } catch (error) {
+      const detail =
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : `运行启动失败：${String(error)}`;
+      setRunStartError(detail);
+    }
   };
 
   return (
     <div className="flex min-h-screen flex-col">
+      {runStartError ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 backdrop-blur-sm"
+          onClick={() => setRunStartError('')}
+        >
+          <div
+            className="w-full max-w-md rounded-[28px] border border-rose-200 bg-white p-6 shadow-[0_30px_90px_-45px_rgba(15,23,42,0.45)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-rose-50 text-rose-600">
+                <AlertCircle className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-slate-900">无法启动研究任务</h3>
+                <p className="mt-2 text-sm leading-6 text-slate-600">{runStartError}</p>
+                <p className="mt-2 text-xs leading-5 text-slate-500">
+                  请先到“设置 → 模型”完成 ChatGPT OAuth 登录，或把相关角色模型切换到其他已可用的 provider。
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end">
+              <Button variant="secondary" onClick={() => setRunStartError('')}>
+                知道了
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="border-b border-slate-200 bg-[var(--app-bg)]/92 px-4 py-5 backdrop-blur-xl sm:px-6">
         <div className={`mx-auto flex w-full ${messageWidthClass} items-center justify-between gap-4`}>
           <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-400">Dynamic Research OS</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-400">动态研究操作系统</p>
             <h2 className="mt-2 truncate text-2xl font-semibold tracking-tight text-slate-900">
               {activeConversation.title}
             </h2>
@@ -194,10 +310,30 @@ export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferenc
           {shouldShowRunInsights ? (
             <div className="mb-8 space-y-6">
               <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-                <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-400">Runtime Summary</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-400">运行概览</p>
                 <h3 className="mt-2 text-base font-semibold text-slate-900">{currentStage.title}</h3>
                 <p className="mt-2 text-sm leading-6 text-slate-500">{currentStage.detail}</p>
               </section>
+
+              {failureSummary ? (
+                <section className="rounded-[28px] border border-amber-200 bg-amber-50/80 p-5 shadow-sm">
+                  <p className="text-xs font-semibold uppercase tracking-[0.26em] text-amber-700">Failure Summary</p>
+                  <h3 className="mt-2 text-base font-semibold text-slate-900">{failureSummary.title}</h3>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">{failureSummary.detail}</p>
+                  {failureSummary.artifacts.length > 0 ? (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {failureSummary.artifacts.map((artifact) => (
+                        <span
+                          key={artifact}
+                          className="rounded-full border border-amber-200 bg-white px-3 py-1 text-xs text-slate-700"
+                        >
+                          {artifact}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
 
               {activeConversation.routePlan?.nodes.length ? (
                 <RouteGraph routePlan={activeConversation.routePlan} nodeStatus={activeConversation.nodeStatus} />
@@ -207,11 +343,11 @@ export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferenc
                 <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-400">Artifacts</p>
+                      <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-400">产物</p>
                       <h3 className="mt-2 text-base font-semibold text-slate-900">产出面板</h3>
                     </div>
                     <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-                      {activeConversation.artifacts.length} item(s)
+                      {activeConversation.artifacts.length} 项
                     </span>
                   </div>
 
@@ -223,12 +359,12 @@ export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferenc
                       >
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-medium text-emerald-700">
-                            {artifact.artifact_type}
+                            {runTabArtifactLabel(artifact.artifact_type)}
                           </span>
                           <span className="font-mono text-xs text-slate-500">{artifact.artifact_id}</span>
                         </div>
                         <p className="mt-2 text-sm text-slate-600">
-                          {artifact.producer_role} · {artifact.producer_skill}
+                          {runTabRoleLabel(artifact.producer_role)} · {artifact.producer_skill}
                         </p>
                       </div>
                     ))}
@@ -237,7 +373,10 @@ export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferenc
               ) : null}
 
               <BehaviorTimeline events={activeConversation.runEvents} />
-              <RawTerminalPanel content={activeConversation.rawTerminalLog} />
+              <RawTerminalPanel
+                content={activeConversation.rawTerminalLog}
+                defaultOpen={activeConversation.status === 'Failed'}
+              />
             </div>
           ) : null}
 
@@ -257,7 +396,7 @@ export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferenc
                         {isUser ? <User2 className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
                       </div>
                       <div className={isUser ? 'text-right' : ''}>
-                        <div className="mb-2 text-xs font-medium text-slate-400">{isUser ? '你' : 'Research OS'}</div>
+                        <div className="mb-2 text-xs font-medium text-slate-400">{isUser ? '你' : '研究系统'}</div>
                         <div
                           className={`whitespace-pre-wrap rounded-[28px] px-5 py-4 leading-7 ${
                             isUser ? 'bg-slate-900 text-white' : 'border border-slate-200 bg-white text-slate-800 shadow-sm'
@@ -279,12 +418,12 @@ export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferenc
           ) : (
             <div className="flex min-h-[56vh] flex-col items-center justify-center text-center">
               <div className="max-w-2xl">
-                <p className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">Research Runtime</p>
+                <p className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">研究运行时</p>
                 <h2 className="mt-4 text-4xl font-semibold tracking-tight text-slate-900 sm:text-5xl">
                   使用动态 DAG 运行研究任务
                 </h2>
                 <p className="mt-4 text-base leading-7 text-slate-500">
-                  输入一个研究请求后，前端会展示局部 DAG、节点状态、skill/tool 调用、observation、replan 和 artifacts。
+                  输入一个研究请求后，前端会展示局部执行图、节点状态、技能与工具调用、观察事件、重规划和产物。
                 </p>
               </div>
 
@@ -316,10 +455,10 @@ export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferenc
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault();
-                  submitPrompt();
+                  void submitPrompt();
                 }
               }}
-              placeholder="输入一个研究请求，运行时会按 planner -> executor -> role -> skill -> tool 路径执行。"
+              placeholder="输入一个研究请求，运行时会按 规划器 -> 执行器 -> 角色 -> 技能 -> 工具 的路径执行。"
               className="min-h-[104px] w-full resize-none rounded-[24px] border-0 bg-transparent px-4 py-3 text-[15px] leading-7 text-slate-900 outline-none placeholder:text-slate-400"
             />
             <div className="mt-2 flex items-center justify-between gap-3 px-2 pb-1">
@@ -333,7 +472,7 @@ export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferenc
                   停止运行
                 </Button>
               ) : (
-                <Button onClick={submitPrompt} disabled={!runOverrides.prompt.trim()} className="rounded-full px-5">
+                <Button onClick={() => void submitPrompt()} disabled={!runOverrides.prompt.trim()} className="rounded-full px-5">
                   <SendHorizonal className="h-4 w-4" />
                   发送
                 </Button>

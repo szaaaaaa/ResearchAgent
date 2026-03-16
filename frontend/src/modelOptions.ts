@@ -1,6 +1,7 @@
 import { AgentRoleId, ProviderModelCatalog, SelectOption } from './types';
 
 type CatalogBundle = {
+  codexCatalog?: ProviderModelCatalog;
   openaiCatalog?: ProviderModelCatalog;
   geminiCatalog?: ProviderModelCatalog;
   openrouterCatalog?: ProviderModelCatalog;
@@ -8,11 +9,14 @@ type CatalogBundle = {
 };
 
 export const LLM_PROVIDER_OPTIONS = [
+  { value: 'openai_codex', label: 'OpenAI Codex OAuth' },
   { value: 'openai', label: 'OpenAI' },
   { value: 'gemini', label: 'Gemini' },
   { value: 'openrouter', label: 'OpenRouter' },
   { value: 'siliconflow', label: 'SiliconFlow' },
 ];
+
+export const OPENAI_CODEX_MODEL_REF_PREFIX = 'openai-codex/';
 
 const VENDOR_LABELS: Record<string, string> = {
   allenai: 'AllenAI',
@@ -64,6 +68,9 @@ function getDynamicModelsByVendor(catalog?: ProviderModelCatalog): Record<string
 }
 
 function getModelsByVendorForProvider(provider: string, bundle: CatalogBundle): Record<string, SelectOption[]> {
+  if (provider === 'openai_codex') {
+    return getDynamicModelsByVendor(bundle.codexCatalog);
+  }
   if (provider === 'openai') {
     return getDynamicModelsByVendor(bundle.openaiCatalog);
   }
@@ -81,7 +88,14 @@ function getModelsByVendorForProvider(provider: string, bundle: CatalogBundle): 
 
 function inferVendorFromModelId(model: string): string {
   const trimmed = String(model || '').trim().toLowerCase();
+  if (trimmed.startsWith(OPENAI_CODEX_MODEL_REF_PREFIX)) {
+    return 'openai';
+  }
   return trimmed.split('/', 1)[0] || '';
+}
+
+export function isOpenAICodexModelRef(model: string): boolean {
+  return String(model || '').trim().toLowerCase().startsWith(OPENAI_CODEX_MODEL_REF_PREFIX);
 }
 
 export function isVendorScopedProvider(provider: string): boolean {
@@ -143,5 +157,5 @@ export const AGENT_ROLE_LABELS: Record<AgentRoleId, string> = {
   experimenter: '实验agent',
   analyst: '分析agent',
   writer: '写作agent',
-  critic: '评审agent',
+  reviewer: '审稿agent',
 };

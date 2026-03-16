@@ -12,17 +12,19 @@ import {
   RunEvent,
   RunOverrides,
 } from './types';
-import { getFirstModelForProvider, getModelOptionsForProvider } from './modelOptions';
+import {
+  getFirstModelForProvider,
+  getModelOptionsForProvider,
+  isOpenAICodexModelRef,
+} from './modelOptions';
 
 export const API_BASE = window.location.port === '3000' ? 'http://localhost:8000' : '';
 
 const UI_SESSIONS_KEY = 'research-agent-chat-sessions';
-const RUN_STATE_PREFIX = '[[RUN_STATE]]';
-const RUN_EVENT_PREFIX = '[[RUN_EVENT]]';
-const RUN_LOG_PREFIX = '[[RUN_LOG]]';
 const RUN_PLACEHOLDER_TEXT = '正在启动研究任务，稍后会用结构化摘要展示当前进度。';
 
 const LLM_BACKEND_BY_PROVIDER: Record<string, string> = {
+  openai_codex: 'openai_codex',
   openai: 'openai_chat',
   gemini: 'gemini_chat',
   openrouter: 'openrouter_chat',
@@ -56,9 +58,17 @@ const defaultCredentialStatus: CredentialStatusMap = {
 };
 
 const defaultProjectConfig: ProjectConfig = {
+  auth: {
+    openai_codex: {
+      default_profile: 'default',
+      allowed_profiles: ['default'],
+      locked: true,
+      require_explicit_switch: true,
+    },
+  },
   providers: {
     llm: {
-      backend: 'openai_chat',
+      backend: 'openai_codex',
       retries: 3,
       retry_backoff_sec: 2,
       gemini_api_key_env: 'GEMINI_API_KEY',
@@ -79,16 +89,20 @@ const defaultProjectConfig: ProjectConfig = {
     },
   },
   llm: {
-    provider: 'openai',
-    model: 'gpt-5.4',
+    provider: 'openai_codex',
+    model: 'openai-codex/gpt-5.4',
     temperature: 0.2,
+    openai_codex: {
+      transport: 'auto',
+      model_discovery: 'account_plus_cached',
+    },
     role_models: {
-      conductor: { provider: 'openai', model: 'gpt-5.4' },
+      conductor: { provider: 'openai_codex', model: 'openai-codex/gpt-5.4' },
       researcher: { provider: 'gemini', model: 'gemini-3-pro-preview' },
       experimenter: { provider: 'gemini', model: 'gemini-3-pro-preview' },
       analyst: { provider: 'openai', model: 'gpt-5.4' },
       writer: { provider: 'openai', model: 'gpt-5.4' },
-      critic: { provider: 'openai', model: 'gpt-5.4' },
+      reviewer: { provider: 'openai', model: 'gpt-5.4' },
     },
   },
   retrieval: {
@@ -151,7 +165,9 @@ const defaultProjectConfig: ProjectConfig = {
     limits: { analysis_web_content_max_chars: 20000 },
     topic_filter: { min_keyword_hits: 1, min_anchor_hits: 1, include_terms: [], block_terms: [] },
     experiment_plan: { enabled: false, max_per_rq: 2, require_human_results: false },
-    checkpointing: { enabled: true, backend: 'sqlite', sqlite_path: '${project.data_dir}/checkpoints.db' },
+    routing: {
+      planner_llm: { provider: 'openai_codex', model: 'openai-codex/gpt-5.4', temperature: 0.1 },
+    },
   },
   ingest: {
     text_extraction: 'auto',
@@ -183,6 +199,8 @@ const defaultProjectConfig: ProjectConfig = {
   budget_guard: { max_tokens: 1000000, max_api_calls: 1000, max_wall_time_sec: 3600 },
 };
 
+const EXECUTION_ROLE_IDS = ['conductor', 'researcher', 'experimenter', 'analyst', 'writer', 'reviewer'] as const;
+
 const defaultRunOverrides: RunOverrides = {
   prompt: '',
   output_dir: './outputs',
@@ -198,14 +216,39 @@ const defaultModelCatalog = {
 };
 
 const defaultRuntimeMode = 'dynamic-os';
-const READ_ONLY_RUNTIME_MESSAGE = 'Dynamic OS runtime settings are read-only. Edit configs/agent.yaml and .env directly.';
+const defaultCodexStatus: AppState['codexStatus'] = {
+  installed: true,
+  logged_in: false,
+  chatgpt_logged_in: false,
+  auth_mode: 'missing',
+  executable: '',
+  available: false,
+  active_profile: 'default',
+  default_profile: 'default',
+  allowed_profiles: ['default'],
+  profile_locked: true,
+  require_explicit_switch: true,
+  available_profiles: [],
+  user_name: '',
+  user_email: '',
+  user_label: '',
+  plan_type: '',
+  account_id: '',
+  expires_at: 0,
+  expires_in_sec: 0,
+  expired: false,
+  has_refresh_token: false,
+  login_in_progress: false,
+  last_error: '',
+};
 
 type ProviderCatalogState = Pick<
   AppState,
-  'openaiCatalog' | 'geminiCatalog' | 'openrouterCatalog' | 'siliconflowCatalog'
+  'codexCatalog' | 'openaiCatalog' | 'geminiCatalog' | 'openrouterCatalog' | 'siliconflowCatalog'
 >;
 
 const defaultProviderCatalogs: ProviderCatalogState = {
+  codexCatalog: defaultModelCatalog,
   openaiCatalog: defaultModelCatalog,
   geminiCatalog: defaultModelCatalog,
   openrouterCatalog: defaultModelCatalog,
@@ -216,10 +259,6 @@ type ProviderCatalogKey = keyof ProviderCatalogState;
 
 function nowIso(): string {
   return new Date().toISOString();
-}
-
-function warnReadOnlyRuntimeConfig(): void {
-  console.warn(READ_ONLY_RUNTIME_MESSAGE);
 }
 
 function createSessionId(): string {
@@ -294,6 +333,7 @@ function normalizeRunEvent(value: unknown): RunEvent | null {
     return null;
   }
 
+  const observation = isRecord(value.observation) ? value.observation : null;
   const type = String(value.type || value.event || '').trim();
   if (!type) {
     return null;
@@ -308,7 +348,7 @@ function normalizeRunEvent(value: unknown): RunEvent | null {
         : Number(iterationRaw);
   let detail = String(value.detail || '');
   if (!detail && type === 'plan_update' && isRecord(value.plan) && Array.isArray(value.plan.nodes)) {
-    detail = `${value.plan.nodes.length} node(s) planned`;
+    detail = `已规划 ${value.plan.nodes.length} 个节点`;
   }
   if (!detail && type === 'observation' && isRecord(value.observation)) {
     detail = String(value.observation.what_happened || '');
@@ -328,13 +368,13 @@ function normalizeRunEvent(value: unknown): RunEvent | null {
     ts: String(value.ts || nowIso()),
     type,
     runId: String(value.run_id || ''),
-    nodeId: String(value.node_id || ''),
-    role: String(value.role || ''),
+    nodeId: String(value.node_id || observation?.node_id || ''),
+    role: String(value.role || observation?.role || ''),
     skillId: String(value.skill_id || ''),
     toolId: String(value.tool_id || ''),
     phase: String(value.phase || ''),
-    status: String(value.status || ''),
-    reason: String(value.reason || ''),
+    status: String(value.status || observation?.status || ''),
+    reason: String(value.reason || observation?.what_happened || ''),
     blockedAction: String(value.blocked_action || ''),
     artifactId: String(value.artifact_id || ''),
     artifactType: String(value.artifact_type || ''),
@@ -343,6 +383,28 @@ function normalizeRunEvent(value: unknown): RunEvent | null {
     iteration: Number.isFinite(iteration) ? iteration : null,
     detail,
   };
+}
+
+function parseSseFrames(chunk: string): Array<{ event: string; data: string }> {
+  return chunk
+    .split('\n\n')
+    .map((frame) => frame.trim())
+    .filter(Boolean)
+    .map((frame) => {
+      let event = 'message';
+      const dataLines: string[] = [];
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('event:')) {
+          event = line.slice(6).trim();
+          continue;
+        }
+        if (line.startsWith('data:')) {
+          dataLines.push(line.slice(5).trim());
+        }
+      }
+      return { event, data: dataLines.join('\n') };
+    })
+    .filter((frame) => frame.data);
 }
 
 function nodeStatusAfterStop(nodeStatus: NodeStatusMap): NodeStatusMap {
@@ -555,21 +617,35 @@ function updateNestedValue(config: ProjectConfig, path: string, value: unknown):
 
 function syncFallbackLlmConfig(projectConfig: ProjectConfig): ProjectConfig {
   const nextConfig = structuredClone(projectConfig);
-  const conductorRole = nextConfig.llm.role_models.conductor;
-  const provider = String(conductorRole.provider || '').trim();
-  const model = String(conductorRole.model || '').trim();
+  const roleModels = nextConfig.llm.role_models as Record<string, AgentModelConfig | undefined>;
+  const legacyCritic = isRecord((roleModels as Record<string, unknown>).critic)
+    ? ({ ...(roleModels as Record<string, AgentModelConfig>).critic } as AgentModelConfig)
+    : null;
+  if (legacyCritic && (!roleModels.reviewer || !String(roleModels.reviewer.model || '').trim())) {
+    roleModels.reviewer = {
+      provider: String(legacyCritic.provider || '').trim(),
+      model: String(legacyCritic.model || '').trim(),
+      temperature: legacyCritic.temperature,
+    };
+  }
+  delete (roleModels as Record<string, unknown>).critic;
+
+  EXECUTION_ROLE_IDS.forEach((roleId) => {
+    if (!roleModels[roleId]) {
+      roleModels[roleId] = { ...defaultProjectConfig.llm.role_models[roleId] };
+    }
+  });
 
   if (isRecord(nextConfig.agent)) {
     const agentConfig = nextConfig.agent as Record<string, unknown>;
     const routingConfig = isRecord(agentConfig.routing) ? (agentConfig.routing as Record<string, unknown>) : {};
     const plannerConfig = isRecord(routingConfig.planner_llm) ? (routingConfig.planner_llm as Record<string, unknown>) : {};
-
-    if (provider) {
-      plannerConfig.provider = provider;
-    }
-    if (model) {
-      plannerConfig.model = model;
-    }
+    const conductorRole = nextConfig.llm.role_models.conductor;
+    const plannerProvider = String(plannerConfig.provider || '').trim() || String(conductorRole.provider || '').trim();
+    const plannerModel = String(plannerConfig.model || '').trim() || String(conductorRole.model || '').trim();
+    plannerConfig.provider = plannerProvider;
+    plannerConfig.model = plannerModel;
+    plannerConfig.temperature = Number(plannerConfig.temperature ?? 0.1);
 
     routingConfig.planner_llm = plannerConfig;
     agentConfig.routing = routingConfig;
@@ -583,8 +659,21 @@ function normalizeModelForProvider(
   model: string,
   catalogs: ProviderCatalogState,
 ): string {
+  const normalizedProvider = String(provider || '').trim();
   const options = getModelOptionsForProvider(provider, catalogs);
   const trimmed = String(model || '').trim();
+  if (!normalizedProvider) {
+    return trimmed;
+  }
+  if (normalizedProvider === 'openai_codex' && options.length === 0) {
+    return isOpenAICodexModelRef(trimmed) ? trimmed : '';
+  }
+  if (normalizedProvider === 'openai_codex') {
+    if (options.some((option) => option.value === trimmed)) {
+      return trimmed;
+    }
+    return getFirstModelForProvider(provider, catalogs) || '';
+  }
   if (options.some((option) => option.value === trimmed)) {
     return trimmed;
   }
@@ -598,14 +687,17 @@ function normalizeModelSelections(
 ): { projectConfig: ProjectConfig; runOverrides: RunOverrides } {
   const nextConfig = syncFallbackLlmConfig(projectConfig);
 
-  (['conductor', 'researcher', 'experimenter', 'analyst', 'writer', 'critic'] as const).forEach((roleId) => {
+  EXECUTION_ROLE_IDS.forEach((roleId) => {
     const roleConfig = nextConfig.llm.role_models[roleId];
-    const roleProvider = roleConfig.provider || nextConfig.llm.provider;
-    if (!roleConfig.provider) {
-      roleConfig.provider = roleProvider;
-    }
+    const roleProvider = String(roleConfig.provider || '').trim();
+    roleConfig.provider = roleProvider;
     roleConfig.model = normalizeModelForProvider(roleProvider, roleConfig.model, catalogs);
   });
+
+  const plannerConfig = nextConfig.agent.routing.planner_llm;
+  const plannerProvider = String(plannerConfig.provider || '').trim();
+  plannerConfig.provider = plannerProvider;
+  plannerConfig.model = normalizeModelForProvider(plannerProvider, plannerConfig.model, catalogs);
 
   const syncedConfig = syncFallbackLlmConfig(nextConfig);
   syncedConfig.ingest.figure.vlm_model = normalizeModelForProvider(
@@ -648,6 +740,76 @@ function parseProviderCatalog(data: unknown): AppState['openaiCatalog'] {
   };
 }
 
+function parseCodexStatus(data: unknown): AppState['codexStatus'] {
+  const payload = isRecord(data) ? data : {};
+  const availableProfiles = Array.isArray(payload.available_profiles)
+    ? payload.available_profiles
+        .filter((item): item is Record<string, unknown> => isRecord(item))
+        .map((item) => ({
+          profile_id: String(item.profile_id || ''),
+          user_label: String(item.user_label || ''),
+          user_name: String(item.user_name || ''),
+          user_email: String(item.user_email || ''),
+          plan_type: String(item.plan_type || ''),
+          account_id: String(item.account_id || ''),
+          updated_at: Number(item.updated_at || 0),
+        }))
+    : [];
+  return {
+    installed: Boolean(payload.installed),
+    logged_in: Boolean(payload.logged_in),
+    chatgpt_logged_in: Boolean(payload.chatgpt_logged_in),
+    auth_mode: String(payload.auth_mode || 'missing'),
+    executable: String(payload.executable || ''),
+    available: Boolean(payload.available),
+    active_profile: String(payload.active_profile || 'default'),
+    default_profile: String(payload.default_profile || 'default'),
+    allowed_profiles: Array.isArray(payload.allowed_profiles)
+      ? payload.allowed_profiles.map((item) => String(item || '')).filter(Boolean)
+      : ['default'],
+    profile_locked: Boolean(payload.profile_locked),
+    require_explicit_switch: Boolean(payload.require_explicit_switch),
+    available_profiles: availableProfiles,
+    user_name: String(payload.user_name || ''),
+    user_email: String(payload.user_email || ''),
+    user_label: String(payload.user_label || ''),
+    plan_type: String(payload.plan_type || ''),
+    account_id: String(payload.account_id || ''),
+    expires_at: Number(payload.expires_at || 0),
+    expires_in_sec: Number(payload.expires_in_sec || 0),
+    expired: Boolean(payload.expired),
+    has_refresh_token: Boolean(payload.has_refresh_token),
+    login_in_progress: Boolean(payload.login_in_progress),
+    last_error: String(payload.last_error || ''),
+  };
+}
+
+function configuredProvidersForRun(projectConfig: ProjectConfig): string[] {
+  const providers = new Set<string>();
+  const normalize = (value: unknown) => String(value || '').trim().toLowerCase();
+  const addProvider = (value: unknown) => {
+    const provider = normalize(value);
+    if (provider) {
+      providers.add(provider);
+    }
+  };
+
+  addProvider(projectConfig.llm.provider);
+  const roleModels = projectConfig.llm.role_models || {};
+  (Object.values(roleModels) as AgentModelConfig[]).forEach((entry) => addProvider(entry?.provider));
+
+  const agentConfig = isRecord(projectConfig.agent) ? (projectConfig.agent as Record<string, unknown>) : {};
+  const routingConfig = isRecord(agentConfig.routing) ? (agentConfig.routing as Record<string, unknown>) : {};
+  const plannerConfig = isRecord(routingConfig.planner_llm) ? (routingConfig.planner_llm as Record<string, unknown>) : {};
+  addProvider(plannerConfig.provider);
+
+  return [...providers];
+}
+
+function runRequiresOpenAICodex(projectConfig: ProjectConfig): boolean {
+  return configuredProvidersForRun(projectConfig).includes('openai_codex');
+}
+
 async function readErrorDetail(response: Response): Promise<string> {
   let payload: unknown;
   try {
@@ -667,8 +829,15 @@ interface AppContextType {
   updateCredentials: (updates: Partial<Credentials>) => void;
   saveCredentials: () => Promise<void>;
   saveProjectConfig: () => Promise<void>;
+  refreshCodexStatus: () => Promise<AppState['codexStatus']>;
+  refreshCodexCatalog: () => Promise<AppState['codexCatalog']>;
+  verifyCodexModel: (model: string) => Promise<string>;
+  startCodexLogin: () => Promise<string>;
+  completeCodexLogin: (callbackInput: string) => Promise<string>;
+  logoutCodex: () => Promise<string>;
   updateProjectConfig: (path: string, value: unknown) => void;
   updateRoleModel: (roleId: AgentRoleId, updates: Partial<ProjectConfig['llm']['role_models'][AgentRoleId]>) => void;
+  updatePlannerModel: (updates: Partial<ProjectConfig['agent']['routing']['planner_llm']>) => void;
   updateRunOverrides: (updates: Partial<RunOverrides>) => void;
   startRun: () => Promise<void>;
   stopRun: () => Promise<void>;
@@ -692,6 +861,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [state, setState] = useState<AppState>({
     credentials: credentialsRef.current,
     credentialStatus: defaultCredentialStatus,
+    codexStatus: defaultCodexStatus,
     runtimeMode: defaultRuntimeMode,
     projectConfig: projectConfigRef.current,
     hasUnsavedModelChanges: false,
@@ -699,6 +869,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     conversations: savedSessions.conversations,
     activeConversationId: savedSessions.activeConversationId,
     isRunInProgress: false,
+    codexCatalog: defaultProviderCatalogs.codexCatalog,
     openaiCatalog: defaultProviderCatalogs.openaiCatalog,
     geminiCatalog: defaultProviderCatalogs.geminiCatalog,
     openrouterCatalog: defaultProviderCatalogs.openrouterCatalog,
@@ -728,50 +899,68 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     key: ProviderCatalogKey,
     endpoint: string,
     errorLabel: string,
-  ) => {
+  ): Promise<AppState['openaiCatalog']> => {
     try {
       const response = await fetch(`${API_BASE}${endpoint}`);
       if (!response.ok) {
         throw new Error(await readErrorDetail(response));
       }
       const data = await response.json();
-      setState((prev) => {
-        const catalog = parseProviderCatalog(data);
-        const nextCatalogs = {
-          openaiCatalog: prev.openaiCatalog,
-          geminiCatalog: prev.geminiCatalog,
-          openrouterCatalog: prev.openrouterCatalog,
-          siliconflowCatalog: prev.siliconflowCatalog,
-          [key]: catalog,
-        };
-        const normalized = normalizeModelSelections(prev.projectConfig, prev.runOverrides, nextCatalogs);
-        catalogsRef.current = nextCatalogs;
-        projectConfigRef.current = normalized.projectConfig;
-        runOverridesRef.current = normalized.runOverrides;
-        return {
-          ...prev,
-          projectConfig: normalized.projectConfig,
-          runOverrides: normalized.runOverrides,
-          [key]: catalog,
-        };
-      });
-    } catch (err) {
-      console.error(`Failed to load ${errorLabel} models`, err);
+      const catalog = parseProviderCatalog(data);
+      const nextCatalogs = {
+        ...catalogsRef.current,
+        [key]: catalog,
+      };
+      const normalized = normalizeModelSelections(projectConfigRef.current, runOverridesRef.current, nextCatalogs);
+      catalogsRef.current = nextCatalogs;
+      projectConfigRef.current = normalized.projectConfig;
+      runOverridesRef.current = normalized.runOverrides;
       setState((prev) => ({
         ...prev,
-        [key]: {
-          ...prev[key],
-          loaded: true,
-          vendorCount: 0,
-          modelCount: 0,
-          error: String(err),
-        },
+        projectConfig: normalized.projectConfig,
+        runOverrides: normalized.runOverrides,
+        [key]: catalog,
       }));
+      return catalog;
+    } catch (err) {
+      console.error(`Failed to load ${errorLabel} models`, err);
+      const fallbackCatalog = {
+        ...defaultModelCatalog,
+        loaded: true,
+        error: String(err),
+      };
+      const nextCatalogs = {
+        ...catalogsRef.current,
+        [key]: fallbackCatalog,
+      };
+      catalogsRef.current = nextCatalogs;
+      setState((prev) => ({
+        ...prev,
+        [key]: fallbackCatalog,
+      }));
+      return fallbackCatalog;
     }
   };
 
+  const refreshCodexStatus = async (): Promise<AppState['codexStatus']> => {
+    const response = await fetch(`${API_BASE}/api/codex/status`);
+    if (!response.ok) {
+      throw new Error(await readErrorDetail(response));
+    }
+    const data = await response.json();
+    const status = parseCodexStatus(data);
+    setState((prev) => ({
+      ...prev,
+      codexStatus: status,
+    }));
+    return status;
+  };
+
+  const refreshCodexCatalog = () => refreshProviderCatalog('codexCatalog', '/api/codex/models', 'Codex');
+
   const refreshAllProviderCatalogs = async () =>
     Promise.all([
+      refreshCodexCatalog(),
       refreshProviderCatalog('openaiCatalog', '/api/openai/models', 'OpenAI'),
       refreshProviderCatalog('geminiCatalog', '/api/gemini/models', 'Gemini'),
       refreshProviderCatalog('openrouterCatalog', '/api/openrouter/models', 'OpenRouter'),
@@ -791,29 +980,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const runtimeMode = typeof payload.runtime_mode === 'string' ? payload.runtime_mode : undefined;
         const configPayload = { ...payload };
         delete configPayload.runtime_mode;
+        if (Object.keys(configPayload).length === 0) {
+          setState((prev) => (runtimeMode ? { ...prev, runtimeMode } : prev));
+          return;
+        }
 
-        setState((prev) => {
-          if (Object.keys(configPayload).length === 0) {
-            return runtimeMode ? { ...prev, runtimeMode } : prev;
-          }
-
-          const mergedConfig = mergeDeep(defaultProjectConfig, configPayload);
-          const normalized = normalizeModelSelections(mergedConfig, defaultRunOverrides, {
-            openaiCatalog: defaultModelCatalog,
-            geminiCatalog: defaultModelCatalog,
-            openrouterCatalog: defaultModelCatalog,
-            siliconflowCatalog: defaultModelCatalog,
-          });
-          projectConfigRef.current = normalized.projectConfig;
-          runOverridesRef.current = normalized.runOverrides;
-          return {
-            ...prev,
-            runtimeMode: runtimeMode ?? prev.runtimeMode,
-            projectConfig: normalized.projectConfig,
-            hasUnsavedModelChanges: false,
-            runOverrides: normalized.runOverrides,
-          };
+        const mergedConfig = mergeDeep(defaultProjectConfig, configPayload);
+        const normalized = normalizeModelSelections(mergedConfig, defaultRunOverrides, {
+          codexCatalog: defaultModelCatalog,
+          openaiCatalog: defaultModelCatalog,
+          geminiCatalog: defaultModelCatalog,
+          openrouterCatalog: defaultModelCatalog,
+          siliconflowCatalog: defaultModelCatalog,
         });
+        projectConfigRef.current = normalized.projectConfig;
+        runOverridesRef.current = normalized.runOverrides;
+        setState((prev) => ({
+          ...prev,
+          runtimeMode: runtimeMode ?? prev.runtimeMode,
+          projectConfig: normalized.projectConfig,
+          hasUnsavedModelChanges: false,
+          runOverrides: normalized.runOverrides,
+        }));
       })
       .catch((err) => console.error('Failed to load config', err));
 
@@ -840,16 +1028,157 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
       .catch((err) => console.error('Failed to load credentials', err));
 
+    refreshCodexStatus().catch((err) => console.error('Failed to load Codex status', err));
+
     void refreshAllProviderCatalogs();
   }, []);
 
-  const saveConfigToBackend = async (newConfig: ProjectConfig) => {
-    void newConfig;
-    warnReadOnlyRuntimeConfig();
+  const applyProjectConfigPayload = (data: unknown, resetUnsavedModelChanges: boolean) => {
+    const payload = isRecord(data) ? data : {};
+    const runtimeMode = typeof payload.runtime_mode === 'string' ? payload.runtime_mode : undefined;
+    const configPayload = { ...payload };
+    delete configPayload.runtime_mode;
+    if (Object.keys(configPayload).length === 0) {
+      setState((prev) => ({
+        ...prev,
+        runtimeMode: runtimeMode ?? prev.runtimeMode,
+        hasUnsavedModelChanges: resetUnsavedModelChanges ? false : prev.hasUnsavedModelChanges,
+      }));
+      return;
+    }
+
+    const mergedConfig = mergeDeep(defaultProjectConfig, configPayload);
+    const normalized = normalizeModelSelections(mergedConfig, runOverridesRef.current, catalogsRef.current);
+    projectConfigRef.current = normalized.projectConfig;
+    runOverridesRef.current = normalized.runOverrides;
+    setState((prev) => ({
+      ...prev,
+      runtimeMode: runtimeMode ?? prev.runtimeMode,
+      projectConfig: normalized.projectConfig,
+      hasUnsavedModelChanges: resetUnsavedModelChanges ? false : prev.hasUnsavedModelChanges,
+      runOverrides: normalized.runOverrides,
+    }));
+  };
+
+  const persistProjectConfig = async (nextConfig: ProjectConfig) => {
+    const response = await fetch(`${API_BASE}/api/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nextConfig),
+    });
+    if (!response.ok) {
+      throw new Error(await readErrorDetail(response));
+    }
+    applyProjectConfigPayload(await response.json(), true);
   };
 
   const saveProjectConfig = async () => {
-    warnReadOnlyRuntimeConfig();
+    try {
+      await persistProjectConfig(projectConfigRef.current);
+    } catch (err) {
+      console.error('Failed to save config', err);
+    }
+  };
+
+  const verifyCodexModel = async (model: string) => {
+    const status = await refreshCodexStatus();
+    const catalog = await refreshCodexCatalog();
+    const resolvedModel =
+      String(model || '').trim() ||
+      getFirstModelForProvider('openai_codex', { ...catalogsRef.current, codexCatalog: catalog });
+
+    if (!status.logged_in) {
+      return `状态已刷新，但当前 profile ${status.active_profile || status.default_profile} 尚未登录 ChatGPT OAuth，暂时无法验证。`;
+    }
+    if (!catalog.modelCount) {
+      if (catalog.error) {
+        return `状态已刷新，但模型目录加载失败：${catalog.error}`;
+      }
+      return '状态已刷新，但当前未发现可用的 OpenAI OAuth 模型。';
+    }
+    if (!resolvedModel) {
+      return '状态已刷新，但还没有可验证的 OpenAI OAuth 模型。';
+    }
+
+    const response = await fetch(`${API_BASE}/api/codex/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: resolvedModel }),
+    });
+    if (response.status === 405) {
+      throw new Error('当前后端进程未加载 /api/codex/verify，请完全重启 python app.py 后再试。');
+    }
+    if (!response.ok) {
+      throw new Error(await readErrorDetail(response));
+    }
+    const data = await response.json();
+    return String((isRecord(data) ? data.message : '') || 'OpenAI OAuth 实调用验证通过。');
+  };
+
+  const startCodexLogin = async () => {
+    const response = await fetch(`${API_BASE}/api/codex/login`, {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      throw new Error(await readErrorDetail(response));
+    }
+    const data = await response.json();
+    const payload = isRecord(data) ? data : {};
+    const authorizeUrl = String(payload.authorize_url || '').trim();
+    if (authorizeUrl) {
+      window.open(authorizeUrl, '_blank', 'noopener,noreferrer');
+    }
+    if (isRecord(payload.status)) {
+      setState((prev) => ({
+        ...prev,
+        codexStatus: parseCodexStatus(payload.status),
+      }));
+    } else {
+      await refreshCodexStatus();
+    }
+    return String(payload.message || '已启动 Codex 登录。');
+  };
+
+  const completeCodexLogin = async (callbackInput: string) => {
+    const response = await fetch(`${API_BASE}/api/codex/callback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ callback_input: callbackInput }),
+    });
+    if (!response.ok) {
+      throw new Error(await readErrorDetail(response));
+    }
+    const data = await response.json();
+    const payload = isRecord(data) ? data : {};
+    if (isRecord(payload.status)) {
+      setState((prev) => ({
+        ...prev,
+        codexStatus: parseCodexStatus(payload.status),
+      }));
+    } else {
+      await refreshCodexStatus();
+    }
+    return String(payload.message || 'OpenAI Codex OAuth login has been completed.');
+  };
+
+  const logoutCodex = async () => {
+    const response = await fetch(`${API_BASE}/api/codex/logout`, {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      throw new Error(await readErrorDetail(response));
+    }
+    const data = await response.json();
+    const payload = isRecord(data) ? data : {};
+    if (isRecord(payload.status)) {
+      setState((prev) => ({
+        ...prev,
+        codexStatus: parseCodexStatus(payload.status),
+      }));
+    } else {
+      await refreshCodexStatus();
+    }
+    return String(payload.message || '已退出 Codex 登录。');
   };
 
   const updateSession = (conversationId: string, updater: (session: ChatSession) => ChatSession) => {
@@ -966,27 +1295,86 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateCredentials = (updates: Partial<Credentials>) => {
-    void updates;
-    warnReadOnlyRuntimeConfig();
+    const nextCredentials = { ...credentialsRef.current, ...updates };
+    credentialsRef.current = nextCredentials;
+    setState((prev) => ({
+      ...prev,
+      credentials: nextCredentials,
+    }));
   };
 
   const saveCredentials = async () => {
-    warnReadOnlyRuntimeConfig();
+    try {
+      const response = await fetch(`${API_BASE}/api/credentials`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(credentialsRef.current),
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorDetail(response));
+      }
+      const data = await response.json();
+      const status = isRecord(data) ? data.status : {};
+      setState((prev) => ({
+        ...prev,
+        credentialStatus: mergeDeep(defaultCredentialStatus, status),
+      }));
+      await refreshAllProviderCatalogs();
+    } catch (err) {
+      console.error('Failed to save credentials', err);
+    }
   };
 
   const updateProjectConfig = (path: string, value: unknown) => {
-    void path;
-    void value;
-    warnReadOnlyRuntimeConfig();
+    const nextConfig = updateNestedValue(projectConfigRef.current, path, value);
+    const normalized = normalizeModelSelections(nextConfig, runOverridesRef.current, catalogsRef.current);
+    projectConfigRef.current = normalized.projectConfig;
+    runOverridesRef.current = normalized.runOverrides;
+    setState((prev) => ({
+      ...prev,
+      projectConfig: normalized.projectConfig,
+      runOverrides: normalized.runOverrides,
+    }));
+    void persistProjectConfig(normalized.projectConfig).catch((err) => console.error('Failed to save config', err));
   };
 
   const updateRoleModel = (
     roleId: AgentRoleId,
     updates: Partial<ProjectConfig['llm']['role_models'][AgentRoleId]>,
   ) => {
-    void roleId;
-    void updates;
-    warnReadOnlyRuntimeConfig();
+    const nextConfig = structuredClone(projectConfigRef.current);
+    nextConfig.llm.role_models[roleId] = {
+      ...nextConfig.llm.role_models[roleId],
+      ...updates,
+    };
+    const normalized = normalizeModelSelections(nextConfig, runOverridesRef.current, catalogsRef.current);
+    projectConfigRef.current = normalized.projectConfig;
+    runOverridesRef.current = normalized.runOverrides;
+    setState((prev) => ({
+      ...prev,
+      projectConfig: normalized.projectConfig,
+      runOverrides: normalized.runOverrides,
+      hasUnsavedModelChanges: true,
+    }));
+  };
+
+  const updatePlannerModel = (
+    updates: Partial<ProjectConfig['agent']['routing']['planner_llm']>,
+  ) => {
+    const nextConfig = structuredClone(projectConfigRef.current);
+    nextConfig.agent.routing.planner_llm = {
+      ...nextConfig.agent.routing.planner_llm,
+      ...updates,
+    };
+    const normalized = normalizeModelSelections(nextConfig, runOverridesRef.current, catalogsRef.current);
+    projectConfigRef.current = normalized.projectConfig;
+    runOverridesRef.current = normalized.runOverrides;
+    setState((prev) => ({
+      ...prev,
+      projectConfig: normalized.projectConfig,
+      runOverrides: normalized.runOverrides,
+      hasUnsavedModelChanges: true,
+    }));
   };
 
   const updateRunOverrides = (updates: Partial<RunOverrides>) => {
@@ -998,30 +1386,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }));
   };
 
-  const appendAssistantChunk = (conversationId: string, assistantId: string, text: string) => {
-    if (!text) {
-      return;
-    }
-
-    updateSession(conversationId, (session) => ({
-      ...session,
-      updatedAt: nowIso(),
-      messages: session.messages.map((message) =>
-        message.id === assistantId
-          ? {
-              ...message,
-              content:
-                message.content === RUN_PLACEHOLDER_TEXT
-                  ? text
-                  : `${message.content}${text}`,
-            }
-          : message,
-      ),
-    }));
-  };
-
   const applyRunStateEvent = (
     conversationId: string,
+    assistantId: string,
     event: {
       run_id?: string;
       status?: string;
@@ -1040,6 +1407,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       nodeStatus:
         Object.keys(event.node_status || {}).length > 0 ? normalizeNodeStatus(event.node_status) : session.nodeStatus,
       artifacts: Array.isArray(event.artifacts) ? normalizeArtifacts(event.artifacts) : session.artifacts,
+      messages: session.messages.map((message) =>
+        message.id === assistantId && typeof event.report_text === 'string' && event.report_text.trim()
+          ? {
+              ...message,
+              content: event.report_text,
+            }
+          : message,
+      ),
     }));
   };
 
@@ -1113,6 +1488,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ],
       }));
       return;
+    }
+
+    if (runRequiresOpenAICodex(projectConfigRef.current)) {
+      try {
+        const status = await refreshCodexStatus();
+        if (!status.logged_in) {
+          const activeProfile = status.active_profile || status.default_profile || 'default';
+          const detail = status.last_error.trim() || `当前配置依赖 ChatGPT OAuth，但 profile ${activeProfile} 尚未登录。`;
+          throw new Error(detail);
+        }
+      } catch (error) {
+        const detail =
+          error instanceof Error && error.message.trim()
+            ? error.message
+            : `无法确认 ChatGPT OAuth 状态。${String(error)}`;
+        throw new Error(detail);
+      }
     }
 
     const assistantId = `assistant-${Date.now()}`;
@@ -1203,21 +1595,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
 
         buffer += chunk;
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
+        const frameBoundary = buffer.lastIndexOf('\n\n');
+        if (frameBoundary < 0) {
+          continue;
+        }
 
-        for (const line of lines) {
-          if (line.startsWith(RUN_LOG_PREFIX)) {
-            appendRawTerminalLog(activeConversationId, `${line.slice(RUN_LOG_PREFIX.length)}\n`);
+        const readyChunk = buffer.slice(0, frameBoundary + 2);
+        buffer = buffer.slice(frameBoundary + 2);
+
+        for (const frame of parseSseFrames(readyChunk)) {
+          if (frame.event === 'run_log') {
+            const payload = JSON.parse(frame.data) as { message?: string };
+            appendRawTerminalLog(activeConversationId, `${String(payload.message || '')}\n`);
             continue;
           }
-          if (line.startsWith(RUN_EVENT_PREFIX)) {
-            const event = JSON.parse(line.slice(RUN_EVENT_PREFIX.length)) as Record<string, unknown>;
+          if (frame.event === 'run_event') {
+            const event = JSON.parse(frame.data) as Record<string, unknown>;
             applyRunEvent(activeConversationId, event);
             continue;
           }
-          if (line.startsWith(RUN_STATE_PREFIX)) {
-            const event = JSON.parse(line.slice(RUN_STATE_PREFIX.length)) as {
+          if (frame.event === 'run_state') {
+            const event = JSON.parse(frame.data) as {
               run_id?: string;
               status?: string;
               route_plan?: RoutePlan | null;
@@ -1225,32 +1623,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               artifacts?: RunArtifact[];
               report_text?: string;
             };
-            applyRunStateEvent(activeConversationId, event);
-            continue;
+            applyRunStateEvent(activeConversationId, assistantId, event);
           }
-          appendAssistantChunk(activeConversationId, assistantId, `${line}\n`);
         }
       }
 
-      const tail = buffer.trimEnd();
+      const tail = buffer.trim();
       if (tail) {
-        if (tail.startsWith(RUN_LOG_PREFIX)) {
-          appendRawTerminalLog(activeConversationId, `${tail.slice(RUN_LOG_PREFIX.length)}\n`);
-        } else if (tail.startsWith(RUN_EVENT_PREFIX)) {
-          const event = JSON.parse(tail.slice(RUN_EVENT_PREFIX.length)) as Record<string, unknown>;
-          applyRunEvent(activeConversationId, event);
-        } else if (tail.startsWith(RUN_STATE_PREFIX)) {
-          const event = JSON.parse(tail.slice(RUN_STATE_PREFIX.length)) as {
-            run_id?: string;
-            status?: string;
-            route_plan?: RoutePlan | null;
-            node_status?: NodeStatusMap;
-            artifacts?: RunArtifact[];
-            report_text?: string;
-          };
-          applyRunStateEvent(activeConversationId, event);
-        } else {
-          appendAssistantChunk(activeConversationId, assistantId, tail);
+        for (const frame of parseSseFrames(`${tail}\n\n`)) {
+          if (frame.event === 'run_log') {
+            const payload = JSON.parse(frame.data) as { message?: string };
+            appendRawTerminalLog(activeConversationId, `${String(payload.message || '')}\n`);
+            continue;
+          }
+          if (frame.event === 'run_event') {
+            const event = JSON.parse(frame.data) as Record<string, unknown>;
+            applyRunEvent(activeConversationId, event);
+            continue;
+          }
+          if (frame.event === 'run_state') {
+            const event = JSON.parse(frame.data) as {
+              run_id?: string;
+              status?: string;
+              route_plan?: RoutePlan | null;
+              node_status?: NodeStatusMap;
+              artifacts?: RunArtifact[];
+              report_text?: string;
+            };
+            applyRunStateEvent(activeConversationId, assistantId, event);
+          }
         }
       }
     } catch (error) {
@@ -1390,8 +1791,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateCredentials,
         saveCredentials,
         saveProjectConfig,
+        refreshCodexStatus,
+        refreshCodexCatalog,
+        verifyCodexModel,
+        startCodexLogin,
+        completeCodexLogin,
+        logoutCodex,
         updateProjectConfig,
         updateRoleModel,
+        updatePlannerModel,
         updateRunOverrides,
         startRun,
         stopRun,

@@ -72,7 +72,6 @@ export const SettingsModal: React.FC<{
   onClose: () => void;
 }> = ({ uiPreferences, onUiPreferencesChange, onClose }) => {
   const [activeCategory, setActiveCategory] = React.useState<SettingsCategoryId>('general');
-  const isReadOnlyCategory = activeCategory !== 'appearance' && activeCategory !== 'about';
 
   React.useEffect(() => {
     const handleEscape = (event: KeyboardEvent) => {
@@ -155,15 +154,7 @@ export const SettingsModal: React.FC<{
                 </div>
               </div>
 
-              {isReadOnlyCategory ? (
-                <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                  Dynamic OS runtime settings are read-only here. Edit `configs/agent.yaml` and `.env` directly.
-                </div>
-              ) : null}
-
-              <div className={isReadOnlyCategory ? 'pointer-events-none opacity-60' : ''}>
-                {renderSection(activeCategory, uiPreferences, onUiPreferencesChange)}
-              </div>
+              <div>{renderSection(activeCategory, uiPreferences, onUiPreferencesChange)}</div>
 
               <div className="mt-8 flex justify-end border-t border-slate-200 pt-4">
                 <Button variant="secondary" onClick={onClose}>
