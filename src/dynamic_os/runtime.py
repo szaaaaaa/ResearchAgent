@@ -21,8 +21,25 @@ from src.dynamic_os.storage.memory import InMemoryArtifactStore, InMemoryObserva
 from src.dynamic_os.tools.backends import ConfiguredLLMClient
 from src.dynamic_os.tools.discovery import StartedMcpRuntime, start_mcp_runtime
 from src.dynamic_os.tools.gateway import ToolGateway
-from src.server.routes.config import _read_env_file
-from src.server.settings import CONFIG_PATH
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_CONFIG_PATH = _REPO_ROOT / "configs" / "agent.yaml"
+_ENV_PATH = _REPO_ROOT / ".env"
+
+
+def _read_env_file() -> dict[str, str]:
+    if not _ENV_PATH.exists():
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in _ENV_PATH.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        parsed_value = value.strip().strip('"').strip("'")
+        if parsed_value:
+            values[key.strip()] = parsed_value
+    return values
 
 EventSink = Callable[[dict[str, Any]], None]
 
@@ -184,7 +201,7 @@ class DynamicResearchRuntime:
         run_dir = self._output_root / resolved_run_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        config = load_yaml(CONFIG_PATH)
+        config = load_yaml(_CONFIG_PATH)
         saved_env = _read_env_file()
         artifact_store = InMemoryArtifactStore()
         observation_store = InMemoryObservationStore()
