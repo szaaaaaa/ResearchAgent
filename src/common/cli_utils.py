@@ -15,11 +15,11 @@ def load_root_and_cfg(from_file: str, config_path: str) -> Tuple[Path, Dict[str,
 
 
 def default_config_path(from_file: str) -> Path:
-    return project_root(from_file) / "configs" / "rag.yaml"
+    return project_root(from_file) / "configs" / "agent.yaml"
 
 
 def add_config_arg(parser: argparse.ArgumentParser, from_file: str) -> None:
-    parser.add_argument("--config", default=str(default_config_path(from_file)), help="Path to configs/rag.yaml")
+    parser.add_argument("--config", default=str(default_config_path(from_file)), help="Path to configs/agent.yaml")
 
 
 def parse_args_and_cfg(

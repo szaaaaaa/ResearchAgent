@@ -24,12 +24,17 @@ logs/
 *.log
 .pytest_cache/
 .tmp/
+.tmp_*
+.tmp_*/
 tests/.tmp_*/
 tests/.tmp_*.sqlite
+.auth/
+frontend/dist/
 
 # Local DB / index artifacts
 *.sqlite
 *.db
 *.bin
 
-.claude
+# Claude Code — exclude entire .claude/ dir (worktrees, hooks, local state)
+.claude/

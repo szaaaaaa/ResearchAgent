@@ -1,95 +1,173 @@
-project:
-  data_dir: data
-paths:
-  papers_dir: ${project.data_dir}/papers
-  metadata_dir: ${project.data_dir}/metadata
-  indexes_dir: ${project.data_dir}/indexes
-  outputs_dir: outputs
-ingest:
-  text_extraction: auto
-  latex:
-    download_source: true
-    source_dir: ${project.data_dir}/sources
-  figure:
-    enabled: true
-    image_dir: ${project.data_dir}/figures
-    min_width: 100
-    min_height: 100
-    vlm_model: gemini-3-pro-preview
-    vlm_temperature: 0.1
-    validation_min_entity_match: 0.5
-fetch:
-  source: arxiv
-  max_results: 10
-  download_pdf: true
-  polite_delay_sec: 1.0
-metadata_store:
-  backend: sqlite
-  sqlite_path: ${paths.metadata_dir}/papers.sqlite
-index:
-  backend: chroma
-  persist_dir: ${paths.indexes_dir}/chroma
-  collection_name: papers
-  web_collection_name: web_sources
-  chunk_size: 1200
-  overlap: 200
-retrieval:
-  runtime_mode: standard
-  embedding_backend: local_st
-  embedding_model: BAAI/bge-m3        # or all-MiniLM-L6-v2
-  device: auto                        # use CUDA/MPS automatically when available
-  remote_embedding_model: text-embedding-3-small
-  hybrid: true                         # BM25 + dense RRF fusion
-  top_k: 10
-  candidate_k: 30
-  reranker_backend: local_crossencoder
-  reranker_model: BAAI/bge-reranker-v2-m3
-llm:
-  model: gemini-3-pro-preview
-  temperature: 0.3
 providers:
   llm:
-    backend: gemini_chat
-    retries: 1
-    retry_backoff_sec: 1.0
-    # For Gemini:
-    # backend: gemini_chat
-    # fallback_model: gemini-2.0-flash
-    # gemini_api_key_env: GEMINI_API_KEY
-    # gemini_base_url: https://generativelanguage.googleapis.com
-    # gemini_timeout_sec: 60
+    backend: openrouter_chat
+    retries: 3
+    retry_backoff_sec: 2
+    gemini_api_key_env: GEMINI_API_KEY
   search:
     backend: default_search
     academic_order:
-    - openalex
+    - arxiv
     - semantic_scholar
-    - google_scholar
     web_order:
-    - duckduckgo
+    - google_cse
+    - bing
     query_all_academic: false
     query_all_web: false
+    circuit_breaker:
+      enabled: true
+      failure_threshold: 5
+      open_ttl_sec: 60
+      half_open_probe_after_sec: 30
+      sqlite_path: ${project.data_dir}/circuit_breaker.db
   retrieval:
     backend: default_retriever
+mcp:
+  servers:
+  - server_id: llm
+    command:
+    - ${python}
+    - ${workspace_root}/scripts/dynamic_os_mcp_server.py
+    - --root
+    - ${workspace_root}
+    - --server-id
+    - llm
+  - server_id: search
+    command:
+    - ${python}
+    - ${workspace_root}/scripts/dynamic_os_mcp_server.py
+    - --root
+    - ${workspace_root}
+    - --server-id
+    - search
+  - server_id: retrieval
+    command:
+    - ${python}
+    - ${workspace_root}/scripts/dynamic_os_mcp_server.py
+    - --root
+    - ${workspace_root}
+    - --server-id
+    - retrieval
+  - server_id: exec
+    command:
+    - ${python}
+    - ${workspace_root}/scripts/dynamic_os_mcp_server.py
+    - --root
+    - ${workspace_root}
+    - --server-id
+    - exec
+llm:
+  provider: openrouter
+  model: google/gemini-2.0-flash-001
+  temperature: 0.2
+  openai_codex:
+    transport: auto
+    model_discovery: account_plus_cached
+  role_models:
+    conductor:
+      provider: openrouter
+      model: google/gemini-2.0-flash-001
+    researcher:
+      provider: openrouter
+      model: google/gemini-2.0-flash-001
+    experimenter:
+      provider: openrouter
+      model: google/gemini-2.0-flash-001
+    analyst:
+      provider: openrouter
+      model: google/gemini-2.0-flash-001
+    writer:
+      provider: openrouter
+      model: google/gemini-2.0-flash-001
+    reviewer:
+      provider: openrouter
+      model: google/gemini-2.0-flash-001
+auth:
+  openai_codex:
+    default_profile: default
+    allowed_profiles:
+    - default
+    locked: true
+    require_explicit_switch: true
+retrieval:
+  openai_api_key_env: OPENAI_API_KEY
+  runtime_mode: standard
+  embedding_backend: openai_embedding
+  embedding_model: text-embedding-3-small
+  remote_embedding_model: text-embedding-3-small
+  hybrid: true
+  top_k: 10
+  candidate_k: 50
+  reranker_backend: local_crossencoder
+  reranker_model: cross-encoder/ms-marco-MiniLM-L-6-v2
+  device: auto
+sources:
+  arxiv:
+    enabled: true
+    max_results_per_query: 10
+    download_pdf: true
+  openalex:
+    enabled: false
+    max_results_per_query: 10
+  google_scholar:
+    enabled: false
+    max_results_per_query: 10
+  semantic_scholar:
+    enabled: true
+    max_results_per_query: 10
+    polite_delay_sec: 1
+    max_retries: 3
+    retry_backoff_sec: 2
+  web:
+    enabled: true
+    max_results_per_query: 10
+  google_cse:
+    enabled: false
+  bing:
+    enabled: false
+  github:
+    enabled: false
+  pdf_download:
+    only_allowed_hosts: false
+    allowed_hosts:
+    - arxiv.org
+    - export.arxiv.org
+    - openreview.net
+    - openaccess.thecvf.com
+    - aclanthology.org
+    - proceedings.mlr.press
+    - jmlr.org
+    - ceur-ws.org
+    - papers.nips.cc
+    - neurips.cc
+    forbidden_host_ttl_sec: 86400
+index:
+  backend: chroma
+  persist_dir: ${project.data_dir}/indexes
+  collection_name: papers
+  web_collection_name: web
+  chunk_size: 1000
+  overlap: 200
 agent:
   seed: 42
-  max_iterations: 3
+  max_iterations: 5
   papers_per_query: 5
   max_queries_per_iteration: 3
-  top_k_for_analysis: 12
-  language: en
-  report_max_sources: 80
+  top_k_for_analysis: 10
+  language: zh
+  report_max_sources: 20
   budget:
     max_research_questions: 3
-    max_sections: 7
-    max_references: 60
+    max_sections: 5
+    max_references: 30
   source_ranking:
-    core_min_a_ratio: 0.9
+    core_min_a_ratio: 0.5
     background_max_c: 0
-    max_per_venue: 2
+    max_per_venue: 5
   query_rewrite:
-    min_per_rq: 6
-    max_per_rq: 8
-    max_total_queries: 8
+    min_per_rq: 1
+    max_per_rq: 3
+    max_total_queries: 10
   dynamic_retrieval:
     simple_query_academic: true
     simple_query_pdf: true
@@ -124,19 +202,19 @@ agent:
     - theorem
     - proof
   memory:
-    max_findings_for_context: 40
-    max_context_chars: 7000
+    max_findings_for_context: 20
+    max_context_chars: 10000
   evidence:
     min_per_rq: 2
     allow_graceful_degrade: true
   claim_alignment:
     enabled: true
-    min_rq_relevance: 0.2
-    anchor_terms_max: 4
+    min_rq_relevance: 0.5
+    anchor_terms_max: 5
   limits:
-    analysis_web_content_max_chars: 15000
+    analysis_web_content_max_chars: 20000
   topic_filter:
-    min_keyword_hits: 2
+    min_keyword_hits: 1
     min_anchor_hits: 1
     include_terms: []
     block_terms:
@@ -146,70 +224,44 @@ agent:
     - route choice
     - value systems of agents
     - multi-agent deep reinforcement learning with communication
+  routing:
+    planner_llm:
+      provider: openrouter
+      model: google/gemini-2.0-flash-001
+      temperature: 0.1
   experiment_plan:
-    enabled: true
+    enabled: false
     max_per_rq: 2
     require_human_results: false
-  staged_indexing:
-    enabled: true
-    fast_text_only_until_iteration: 0
-    first_pass_text_extraction: pymupdf_only
-    figure_enrichment_start_iteration: 1
-    figure_top_papers: 4
-sources:
-  pdf_download:
-    only_allowed_hosts: true
-    allowed_hosts:
-    - arxiv.org
-    - export.arxiv.org
-    - openreview.net
-    - openaccess.thecvf.com
-    - aclanthology.org
-    - proceedings.mlr.press
-    - jmlr.org
-    - ceur-ws.org
-    - papers.nips.cc
-    - neurips.cc
-    forbidden_host_ttl_sec: 1800
-  arxiv:
-    enabled: true
-    max_results_per_query: 6
-    download_pdf: true
-  openalex:
-    enabled: true
-    max_results_per_query: 6
-  google_scholar:
+ingest:
+  text_extraction: auto
+  latex:
+    download_source: false
+    source_dir: ${project.data_dir}/latex
+  figure:
     enabled: false
-    max_results_per_query: 8
-  google_cse:
-    enabled: false
-  bing:
-    enabled: false
-  github:
-    enabled: false
-  web:
-    enabled: false
-    max_results_per_query: 8
-    overfetch_factor: 3
-    prefer_google: false
-    google_hl: en
-    google_gl: us
-    bing_mkt: en-US
-    github_sort: stars
-    ddg_region: us-en
-    prefer_english: true
-    max_chinese_ratio: 0.25
-    blocked_domains: []
-    scrape_pages: true
-    scrape_max_chars: 30000
-    polite_delay_sec: 0.5
-  semantic_scholar:
-    enabled: true
-    max_results_per_query: 5
-    polite_delay_sec: 3.0
-    max_retries: 1
-    retry_backoff_sec: 1.5
+    image_dir: ${project.data_dir}/figures
+    min_width: 200
+    min_height: 200
+    vlm_model: deep-research-pro-preview-12-2025
+    vlm_temperature: 0.1
+    validation_min_entity_match: 1
+fetch:
+  source: arxiv
+  max_results: 10
+  download_pdf: true
+  polite_delay_sec: 1
+project:
+  data_dir: ./data
+paths:
+  papers_dir: ${project.data_dir}/papers
+  metadata_dir: ${project.data_dir}/metadata
+  indexes_dir: ${project.data_dir}/indexes
+  outputs_dir: ${project.data_dir}/outputs
+metadata_store:
+  backend: sqlite
+  sqlite_path: ${project.data_dir}/metadata.db
 budget_guard:
-  max_tokens: 5000000
-  max_api_calls: 1500
-  max_wall_time_sec: 7200
+  max_tokens: 1000000
+  max_api_calls: 1000
+  max_wall_time_sec: 3600

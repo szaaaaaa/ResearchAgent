@@ -5,7 +5,7 @@ from pathlib import Path
 from src.common.arg_utils import add_index_build_args, add_index_store_args, add_retrieval_args
 from src.common.cli_utils import add_config_arg, parse_args_and_cfg, run_cli
 from src.common.rag_config import collection_name, papers_dir, persist_dir, retrieval_embedding_model, retrieval_hybrid
-from src.workflows.traditional_rag import index_pdfs, list_pdfs
+from src.ingest.pdf_indexing import index_pdfs, list_pdfs
 
 
 def main() -> int:

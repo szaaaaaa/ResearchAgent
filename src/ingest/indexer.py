@@ -7,7 +7,7 @@ from pathlib import Path
 import chromadb
 
 from src.ingest.chunking import Chunk
-from src.rag.embeddings import DEFAULT_BACKEND, DEFAULT_MODEL, embed_texts
+from src.retrieval.embeddings import DEFAULT_BACKEND, DEFAULT_MODEL, embed_texts
 
 
 def _coerce_chunk(chunk: Any, idx: int) -> Chunk:
@@ -122,7 +122,7 @@ def build_chroma_index(
     col.add(ids=ids, documents=docs, metadatas=metas, embeddings=embeddings)
 
     if build_bm25:
-        from src.rag.bm25_index import build_bm25_sidecar
+        from src.retrieval.bm25_index import build_bm25_sidecar
 
         build_bm25_sidecar(persist_dir, collection_name, ids, docs)
 
