@@ -1,6 +1,6 @@
 import React from 'react';
-import { AlertCircle, ArrowUpRight, Bot, LoaderCircle, SendHorizonal, Square, User2 } from 'lucide-react';
-import { useAppContext } from '../../store';
+import { AlertCircle, ArrowUpRight, Bot, ChevronRight, LoaderCircle, SendHorizonal, Square, User2, X } from 'lucide-react';
+import { useAppContext, API_BASE } from '../../store';
 import { NodeStatusMap, RoutePlan, RunArtifact } from '../../types';
 import { Button } from '../ui';
 import { UiPreferences } from '../settings/types';
@@ -214,10 +214,113 @@ function latestFailureSummary(conversation: {
   };
 }
 
+function renderArtifactPayload(payload: Record<string, unknown>): React.ReactNode {
+  const keys = Object.keys(payload);
+  if (keys.length === 0) {
+    return <p className="text-sm text-slate-400">（无内容）</p>;
+  }
+  return (
+    <div className="space-y-4">
+      {keys.map((key) => {
+        const value = payload[key];
+        const isLongText = typeof value === 'string' && value.length > 120;
+        return (
+          <div key={key}>
+            <p className="mb-1 text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">{key}</p>
+            {isLongText ? (
+              <p className="whitespace-pre-wrap rounded-2xl bg-slate-50 px-4 py-3 text-sm leading-7 text-slate-700">{value}</p>
+            ) : typeof value === 'object' && value !== null ? (
+              <pre className="overflow-x-auto rounded-2xl bg-slate-50 px-4 py-3 text-xs leading-6 text-slate-700">
+                {JSON.stringify(value, null, 2)}
+              </pre>
+            ) : (
+              <p className="text-sm leading-6 text-slate-700">{String(value)}</p>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+interface ArtifactDetailState {
+  runId: string;
+  artifactId: string;
+  artifactType: string;
+}
+
+function ArtifactDetailModal({
+  detail,
+  onClose,
+}: {
+  detail: ArtifactDetailState;
+  onClose: () => void;
+}) {
+  const [payload, setPayload] = React.useState<Record<string, unknown> | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState('');
+
+  React.useEffect(() => {
+    setLoading(true);
+    setError('');
+    fetch(`${API_BASE}/api/runs/${detail.runId}/artifacts/${detail.artifactId}`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json() as Promise<{ payload: Record<string, unknown> }>;
+      })
+      .then((data) => {
+        setPayload(data.payload ?? {});
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : String(err));
+        setLoading(false);
+      });
+  }, [detail.runId, detail.artifactId]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/35 px-4 py-8 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-2xl rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_30px_90px_-45px_rgba(15,23,42,0.45)]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-5 flex items-start justify-between gap-3">
+          <div>
+            <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-medium text-emerald-700">
+              {runTabArtifactLabel(detail.artifactType)}
+            </span>
+            <p className="mt-2 font-mono text-xs text-slate-500">{detail.artifactId}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        {loading ? (
+          <div className="flex items-center justify-center py-10">
+            <LoaderCircle className="h-5 w-5 animate-spin text-slate-400" />
+          </div>
+        ) : error ? (
+          <p className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-600">{error}</p>
+        ) : payload !== null ? (
+          renderArtifactPayload(payload)
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferences }) => {
   const { state, updateRunOverrides, startRun, stopRun } = useAppContext();
   const { conversations, activeConversationId, runOverrides } = state;
   const [runStartError, setRunStartError] = React.useState('');
+  const [artifactDetail, setArtifactDetail] = React.useState<ArtifactDetailState | null>(null);
   const activeConversation =
     conversations.find((conversation) => conversation.id === activeConversationId) ?? conversations[0];
   const isActiveConversationRunning =
@@ -260,6 +363,10 @@ export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferenc
 
   return (
     <div className="flex min-h-screen flex-col">
+      {artifactDetail ? (
+        <ArtifactDetailModal detail={artifactDetail} onClose={() => setArtifactDetail(null)} />
+      ) : null}
+
       {runStartError ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 backdrop-blur-sm"
@@ -353,20 +460,31 @@ export const RunTab: React.FC<{ uiPreferences: UiPreferences }> = ({ uiPreferenc
 
                   <div className="mt-5 grid gap-3 md:grid-cols-2">
                     {activeConversation.artifacts.map((artifact) => (
-                      <div
+                      <button
                         key={`${artifact.artifact_type}-${artifact.artifact_id}`}
-                        className="rounded-3xl border border-slate-200 bg-slate-50 px-4 py-3"
+                        type="button"
+                        onClick={() =>
+                          setArtifactDetail({
+                            runId: activeConversation.runId,
+                            artifactId: artifact.artifact_id,
+                            artifactType: artifact.artifact_type,
+                          })
+                        }
+                        className="rounded-3xl border border-slate-200 bg-slate-50 px-4 py-3 text-left transition hover:border-slate-300 hover:bg-white hover:shadow-sm"
                       >
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-medium text-emerald-700">
-                            {runTabArtifactLabel(artifact.artifact_type)}
-                          </span>
-                          <span className="font-mono text-xs text-slate-500">{artifact.artifact_id}</span>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-medium text-emerald-700">
+                              {runTabArtifactLabel(artifact.artifact_type)}
+                            </span>
+                            <span className="font-mono text-xs text-slate-500">{artifact.artifact_id}</span>
+                          </div>
+                          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-400" />
                         </div>
                         <p className="mt-2 text-sm text-slate-600">
                           {runTabRoleLabel(artifact.producer_role)} · {artifact.producer_skill}
                         </p>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 </section>

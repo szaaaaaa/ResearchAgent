@@ -18,6 +18,8 @@ from src.server.settings import CONFIG_PATH, ROOT
 router = APIRouter()
 _ACTIVE_RUNS: dict[str, asyncio.Task[None]] = {}
 _ACTIVE_RUNS_LOCK = asyncio.Lock()
+_ACTIVE_RUNTIMES: dict[str, DynamicResearchRuntime] = {}
+_ACTIVE_RUNTIMES_LOCK = asyncio.Lock()
 
 
 def _normalize_provider(value: Any) -> str:
@@ -162,6 +164,8 @@ async def run_agent(request: Request):
         run_id = str(payload_dict.get("run_id") or "").strip()
         if run_id:
             status_payload["run_id"] = run_id
+            if run_id not in _ACTIVE_RUNTIMES:
+                _ACTIVE_RUNTIMES[run_id] = runtime
         if payload_dict.get("type") == "plan_update" and isinstance(payload_dict.get("plan"), dict):
             status_payload["route_plan"] = payload_dict["plan"]
         if payload_dict.get("type") == "node_status" and payload_dict.get("node_id"):
@@ -233,9 +237,54 @@ async def run_agent(request: Request):
                 except asyncio.CancelledError:
                     pass
             await _unregister_active_run(client_request_id, task)
+            run_id_to_remove = status_payload.get("run_id", "")
+            if run_id_to_remove:
+                _ACTIVE_RUNTIMES.pop(run_id_to_remove, None)
 
     return StreamingResponse(
         generate_output(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
+
+
+def _load_artifacts_full_from_disk(run_id: str) -> list[dict[str, Any]] | None:
+    artifacts_path = ROOT / "outputs" / run_id / "artifacts_full.json"
+    if not artifacts_path.exists():
+        return None
+    try:
+        return json.loads(artifacts_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+@router.get("/api/runs/{run_id}/artifacts")
+async def list_run_artifacts(run_id: str):
+    runtime = _ACTIVE_RUNTIMES.get(run_id)
+    if runtime is not None and runtime._artifact_store is not None:
+        return [record.model_dump(mode="json") for record in runtime._artifact_store.list_all()]
+
+    disk_records = _load_artifacts_full_from_disk(run_id)
+    if disk_records is not None:
+        return disk_records
+
+    raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
+
+
+@router.get("/api/runs/{run_id}/artifacts/{artifact_id}")
+async def get_run_artifact(run_id: str, artifact_id: str):
+    runtime = _ACTIVE_RUNTIMES.get(run_id)
+    if runtime is not None and runtime._artifact_store is not None:
+        record = runtime._artifact_store.get(artifact_id)
+        if record is not None:
+            return record.model_dump(mode="json")
+        raise HTTPException(status_code=404, detail=f"artifact {artifact_id!r} not found in active run {run_id!r}")
+
+    disk_records = _load_artifacts_full_from_disk(run_id)
+    if disk_records is not None:
+        for record in disk_records:
+            if record.get("artifact_id") == artifact_id:
+                return record
+        raise HTTPException(status_code=404, detail=f"artifact {artifact_id!r} not found in run {run_id!r}")
+
+    raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")

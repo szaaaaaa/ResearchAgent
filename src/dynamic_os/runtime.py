@@ -195,6 +195,11 @@ class DynamicResearchRuntime:
             raise ValueError(f"output_root must stay within workspace root: {self._root}")
         self._output_root = resolved_output_root
         self._event_sink = event_sink
+        self._artifact_store: InMemoryArtifactStore | None = None
+
+    @property
+    def output_root(self) -> Path:
+        return self._output_root
 
     async def run(self, *, user_request: str, run_id: str | None = None) -> DynamicRunResult:
         resolved_run_id = run_id or f"run_{_run_tag()}"
@@ -204,6 +209,7 @@ class DynamicResearchRuntime:
         config = load_yaml(_CONFIG_PATH)
         saved_env = _read_env_file()
         artifact_store = InMemoryArtifactStore()
+        self._artifact_store = artifact_store
         observation_store = InMemoryObservationStore()
         plan_store = InMemoryPlanStore()
         role_registry = RoleRegistry.from_file()
@@ -352,6 +358,8 @@ class DynamicResearchRuntime:
         (run_dir / "research_report.md").write_text(report_text, encoding="utf-8")
         (run_dir / "research_state.json").write_text(json.dumps(state_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         (run_dir / "artifacts.json").write_text(json.dumps(artifact_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        artifacts_full = [artifact.model_dump(mode="json") for artifact in artifacts]
+        (run_dir / "artifacts_full.json").write_text(json.dumps(artifacts_full, ensure_ascii=False, indent=2), encoding="utf-8")
         return DynamicRunResult(
             run_id=resolved_run_id,
             status=status,

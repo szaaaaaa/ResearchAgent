@@ -3463,3 +3463,229 @@ def test_phase7_no_legacy_runtime_references_in_live_paths() -> None:
             text = path.read_text(encoding="utf-8", errors="ignore")
             for token in forbidden:
                 assert token not in text, f"{token} still present in {path}"
+
+
+# ---------------------------------------------------------------------------
+# Artifact Content Browser (Feature 1)
+# ---------------------------------------------------------------------------
+
+
+def test_artifact_browser_list_from_disk() -> None:
+    from src.server.routes import runs as runs_route
+
+    run_id = "run_browser_list"
+    records = [
+        {
+            "artifact_id": "art_001",
+            "artifact_type": "ResearchReport",
+            "producer_role": "writer",
+            "producer_skill": "draft_report",
+            "schema_version": "1.0",
+            "content_ref": "",
+            "payload": {"report": "# My report"},
+            "source_inputs": [],
+            "created_at": "2026-03-20T00:00:00+00:00",
+        }
+    ]
+    original_load = runs_route._load_artifacts_full_from_disk
+
+    def patched_load(rid: str) -> list[dict] | None:
+        if rid == run_id:
+            return records
+        return original_load(rid)
+
+    monkeypatch_obj = pytest.MonkeyPatch()
+    monkeypatch_obj.setattr(runs_route, "_load_artifacts_full_from_disk", patched_load)
+    try:
+        client = TestClient(app)
+        response = client.get(f"/api/runs/{run_id}/artifacts")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["artifact_id"] == "art_001"
+        assert data[0]["payload"]["report"] == "# My report"
+    finally:
+        monkeypatch_obj.undo()
+
+
+def test_artifact_browser_get_single_from_disk() -> None:
+    from src.server.routes import runs as runs_route
+
+    run_id = "run_browser_single"
+    records = [
+        {
+            "artifact_id": "art_002",
+            "artifact_type": "EvidenceMap",
+            "producer_role": "researcher",
+            "producer_skill": "build_evidence_map",
+            "schema_version": "1.0",
+            "content_ref": "",
+            "payload": {"nodes": ["A", "B"], "edges": [["A", "B"]]},
+            "source_inputs": [],
+            "created_at": "2026-03-20T00:00:00+00:00",
+        }
+    ]
+    original_load = runs_route._load_artifacts_full_from_disk
+
+    def patched_load(rid: str) -> list[dict] | None:
+        if rid == run_id:
+            return records
+        return original_load(rid)
+
+    monkeypatch_obj = pytest.MonkeyPatch()
+    monkeypatch_obj.setattr(runs_route, "_load_artifacts_full_from_disk", patched_load)
+    try:
+        client = TestClient(app)
+        response = client.get(f"/api/runs/{run_id}/artifacts/art_002")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["artifact_id"] == "art_002"
+        assert data["payload"]["nodes"] == ["A", "B"]
+
+        missing = client.get(f"/api/runs/{run_id}/artifacts/does_not_exist")
+        assert missing.status_code == 404
+    finally:
+        monkeypatch_obj.undo()
+
+
+def test_artifact_browser_returns_404_for_unknown_run() -> None:
+    from src.server.routes import runs as runs_route
+
+    original_load = runs_route._load_artifacts_full_from_disk
+
+    def patched_load(rid: str) -> list[dict] | None:
+        return None
+
+    monkeypatch_obj = pytest.MonkeyPatch()
+    monkeypatch_obj.setattr(runs_route, "_load_artifacts_full_from_disk", patched_load)
+    try:
+        client = TestClient(app)
+        response = client.get("/api/runs/run_unknown_xyz/artifacts")
+        assert response.status_code == 404
+        response2 = client.get("/api/runs/run_unknown_xyz/artifacts/art_x")
+        assert response2.status_code == 404
+    finally:
+        monkeypatch_obj.undo()
+
+
+def test_artifact_browser_list_from_active_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.server.routes import runs as runs_route
+    from src.dynamic_os.contracts.artifact import ArtifactRecord
+    from src.dynamic_os.contracts.route_plan import RoleId
+    from src.dynamic_os.storage.memory import InMemoryArtifactStore
+
+    store = InMemoryArtifactStore()
+    record = ArtifactRecord(
+        artifact_id="art_active_001",
+        artifact_type="PaperNotes",
+        producer_role=RoleId.researcher,
+        producer_skill="extract_notes",
+        payload={"notes": "very interesting finding"},
+    )
+    store.save(record)
+
+    fake_runtime = SimpleNamespace(_artifact_store=store)
+    monkeypatch.setitem(runs_route._ACTIVE_RUNTIMES, "run_active_test", fake_runtime)
+
+    client = TestClient(app)
+    response = client.get("/api/runs/run_active_test/artifacts")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["artifact_id"] == "art_active_001"
+    assert data[0]["payload"]["notes"] == "very interesting finding"
+
+
+def test_artifact_browser_get_single_from_active_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.server.routes import runs as runs_route
+    from src.dynamic_os.contracts.artifact import ArtifactRecord
+    from src.dynamic_os.contracts.route_plan import RoleId
+    from src.dynamic_os.storage.memory import InMemoryArtifactStore
+
+    store = InMemoryArtifactStore()
+    record = ArtifactRecord(
+        artifact_id="art_active_002",
+        artifact_type="TopicBrief",
+        producer_role=RoleId.conductor,
+        producer_skill="plan_research",
+        payload={"brief": "topic overview"},
+    )
+    store.save(record)
+
+    fake_runtime = SimpleNamespace(_artifact_store=store)
+    monkeypatch.setitem(runs_route._ACTIVE_RUNTIMES, "run_active_single", fake_runtime)
+
+    client = TestClient(app)
+    response = client.get("/api/runs/run_active_single/artifacts/art_active_002")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["artifact_id"] == "art_active_002"
+    assert data["payload"]["brief"] == "topic overview"
+
+    missing = client.get("/api/runs/run_active_single/artifacts/no_such_artifact")
+    assert missing.status_code == 404
+
+
+def test_runtime_writes_artifacts_full_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """After a run completes, artifacts_full.json must contain full artifact payloads."""
+    import src.dynamic_os.runtime as runtime_mod
+    from src.dynamic_os.runtime import DynamicResearchRuntime, DynamicRunResult
+    from src.dynamic_os.contracts.artifact import ArtifactRecord
+    from src.dynamic_os.contracts.route_plan import RoleId
+    from src.dynamic_os.storage.memory import InMemoryArtifactStore as IAS
+
+    async def patched_run(self, *, user_request: str, run_id: str | None = None):
+        import json as _json
+
+        resolved_run_id = run_id or "run_full_test"
+        run_dir = self._output_root / resolved_run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        artifact_store = IAS()
+        self._artifact_store = artifact_store
+
+        artifact_store.save(
+            ArtifactRecord(
+                artifact_id="art_full_001",
+                artifact_type="ResearchReport",
+                producer_role=RoleId.writer,
+                producer_skill="draft_report",
+                payload={"report": "the full report text"},
+            )
+        )
+
+        artifacts = artifact_store.list_all()
+        artifacts_full = [a.model_dump(mode="json") for a in artifacts]
+        (run_dir / "artifacts_full.json").write_text(
+            _json.dumps(artifacts_full, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        return DynamicRunResult(
+            run_id=resolved_run_id,
+            status="completed",
+            route_plan={},
+            node_status={},
+            artifacts=[
+                {
+                    "artifact_id": "art_full_001",
+                    "artifact_type": "ResearchReport",
+                    "producer_role": "writer",
+                    "producer_skill": "draft_report",
+                }
+            ],
+            report_text="the full report text",
+            output_dir=run_dir,
+            events=[],
+        )
+
+    monkeypatch.setattr(DynamicResearchRuntime, "run", patched_run)
+    runtime = DynamicResearchRuntime(root=str(tmp_path), output_root=str(tmp_path / "outputs"))
+
+    result = asyncio.run(runtime.run(user_request="test", run_id="run_full_test"))
+
+    full_path = tmp_path / "outputs" / "run_full_test" / "artifacts_full.json"
+    assert full_path.exists(), "artifacts_full.json must be written after run"
+    full_data = json.loads(full_path.read_text(encoding="utf-8"))
+    assert len(full_data) == 1
+    assert full_data[0]["artifact_id"] == "art_full_001"
+    assert full_data[0]["payload"]["report"] == "the full report text"
