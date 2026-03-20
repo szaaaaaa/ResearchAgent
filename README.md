@@ -70,7 +70,32 @@
 
 ## 快速入门
 
-### 1. 环境准备
+### 方式一：Docker（推荐）
+
+最简单的启动方式，不需要安装 Python、Node.js 或 LaTeX。
+
+```bash
+# 1. 克隆项目
+git clone https://github.com/szaaaaaa/ResearchAgent.git
+cd ResearchAgent
+
+# 2. 配置 API Key（至少需要一个）
+cp .env.example .env
+# 编辑 .env 填入你的 API key
+
+# 3. 一键启动
+docker compose up --build
+
+# 首次构建约需 5-10 分钟，之后启动只需几秒
+```
+
+打开浏览器访问 `http://localhost:8000` 即可使用。
+
+数据持久化：`data/` 目录和 `configs/agent.yaml` 自动挂载到容器外，关闭容器后数据不丢失。
+
+### 方式二：本地开发环境
+
+#### 1. 环境准备
 
 ```bash
 # Python 3.10+
