@@ -308,6 +308,10 @@ class DynamicResearchRuntime:
         self._active_executor = executor
 
         status = "completed"
+        artifacts: list[ArtifactRecord] = []
+        artifact_summary: list[dict[str, str]] = []
+        report_text = ""
+        route_plan: dict[str, Any] = {}
         try:
             result = await executor.run(user_request=user_request, run_id=resolved_run_id)
         except asyncio.CancelledError:
@@ -341,33 +345,34 @@ class DynamicResearchRuntime:
             self._active_executor = None
             await mcp_runtime.close()
 
-        artifacts = artifact_store.list_all()
-        observations = observation_store.list_latest(200)
-        report_text = _report_text(artifacts=artifacts, observations=observations, status=status)
-        route_plan = latest_plan or (plan_store.get_latest().model_dump(mode="json") if plan_store.get_latest() is not None else {})
-        artifact_summary = [
-            {
-                "artifact_id": artifact.artifact_id,
-                "artifact_type": artifact.artifact_type,
-                "producer_role": artifact.producer_role.value,
-                "producer_skill": artifact.producer_skill,
+            artifacts = artifact_store.list_all()
+            observations = observation_store.list_latest(200)
+            report_text = _report_text(artifacts=artifacts, observations=observations, status=status)
+            route_plan = latest_plan or (plan_store.get_latest().model_dump(mode="json") if plan_store.get_latest() is not None else {})
+            artifact_summary = [
+                {
+                    "artifact_id": artifact.artifact_id,
+                    "artifact_type": artifact.artifact_type,
+                    "producer_role": artifact.producer_role.value,
+                    "producer_skill": artifact.producer_skill,
+                }
+                for artifact in artifacts
+            ]
+            state_payload = {
+                "run_id": resolved_run_id,
+                "status": status,
+                "route_plan": route_plan,
+                "node_status": node_status,
+                "artifacts": artifact_summary,
+                "report_text": report_text,
+                "observations": [observation.model_dump(mode="json") for observation in observations[-20:]],
             }
-            for artifact in artifacts
-        ]
-        state_payload = {
-            "run_id": resolved_run_id,
-            "status": status,
-            "route_plan": route_plan,
-            "node_status": node_status,
-            "artifacts": artifact_summary,
-            "report_text": report_text,
-            "observations": [observation.model_dump(mode="json") for observation in observations[-20:]],
-        }
-        (run_dir / "research_report.md").write_text(report_text, encoding="utf-8")
-        (run_dir / "research_state.json").write_text(json.dumps(state_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        (run_dir / "artifacts.json").write_text(json.dumps(artifact_summary, ensure_ascii=False, indent=2), encoding="utf-8")
-        artifacts_full = [artifact.model_dump(mode="json") for artifact in artifacts]
-        (run_dir / "artifacts_full.json").write_text(json.dumps(artifacts_full, ensure_ascii=False, indent=2), encoding="utf-8")
+            (run_dir / "research_report.md").write_text(report_text, encoding="utf-8")
+            (run_dir / "research_state.json").write_text(json.dumps(state_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            (run_dir / "artifacts.json").write_text(json.dumps(artifact_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+            artifacts_full = [artifact.model_dump(mode="json") for artifact in artifacts]
+            (run_dir / "artifacts_full.json").write_text(json.dumps(artifacts_full, ensure_ascii=False, indent=2), encoding="utf-8")
+
         return DynamicRunResult(
             run_id=resolved_run_id,
             status=status,

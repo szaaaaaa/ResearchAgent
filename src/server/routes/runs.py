@@ -33,7 +33,7 @@ def _normalize_provider(value: Any) -> str:
 
 def _configured_llm_providers(config: dict[str, Any]) -> set[str]:
     providers: set[str] = set()
-    for path in ("llm.provider", "agent.routing.planner_llm.provider"):
+    for path in ("agent.routing.planner_llm.provider",):
         provider = _normalize_provider(get_by_dotted(config, path))
         if provider:
             providers.add(provider)

@@ -423,6 +423,7 @@ class ConfiguredLLMClient:
             "text": text_payload,
             "include": ["reasoning.encrypted_content"],
             "instructions": "\n\n".join(part for part in instructions if part).strip() or default_instructions,
+            "max_output_tokens": max_tokens,
         }
         return payload
 
