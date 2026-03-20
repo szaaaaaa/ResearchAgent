@@ -1,266 +1,306 @@
-# ResearchAgent
+# ResearchAgent — 自主研究智能体系统
 
-ResearchAgent 是一个本地优先的自治研究系统，当前围绕 `dynamic_os` 运行时构建。输入一个主题或完整研究请求后，系统会按下面这条执行链路生成一次可追踪的研究运行：
+一个基于动态 DAG 规划的自主学术研究系统。输入一个研究主题，系统自动完成文献检索、笔记提取、证据图谱构建和学术综述论文撰写，输出可编译的 LaTeX 源文件和 PDF。
 
-`planner -> executor -> role -> skill -> tool`
+## 功能概览
 
-当前仓库包含 FastAPI 后端、Vite/React 前端、命令行入口、本地检索与索引工具，以及用于工具后端的 stdio MCP 桥接。
+- **自动文献检索**：同时查询 arXiv 和 Semantic Scholar，支持中英文主题（中文自动翻译为英文关键词）
+- **多角色协作**：conductor（规划）→ researcher（搜索/提取）→ writer（撰写）→ reviewer（审阅），每个角色可配置独立的 LLM
+- **学术综述输出**：生成符合 NeurIPS 格式规范的 LaTeX 论文，自动生成 `references.bib`，支持 PDF 和 LaTeX 压缩包下载
+- **动态 DAG 规划**：LLM planner 根据当前进度动态生成执行计划，失败时自动 fallback 到多步确定性计划
+- **前端可视化**：实时展示执行图、节点状态、时间线事件和产出物，所有面板可折叠
+- **灵活配置**：前端设置页面支持模型选择、搜索源开关、参数调整，每个区域都有保存按钮
 
-## 当前仓库的有效实现
+## 系统架构
 
-- `app.py`：FastAPI 入口。提供 API，并在 `frontend/dist/` 存在时挂载前端静态文件。
-- `configs/agent.yaml`：后端与设置界面共用的权威运行时配置。
-- `scripts/run_agent.py`：`dynamic_os` 的命令行运行入口。
-- `scripts/build_index.py`：从 PDF 构建或刷新本地检索索引。
-- `scripts/dynamic_os_mcp_server.py`：按 `server_id` 暴露工具后端的 stdio MCP 桥。
-- `src/dynamic_os/`：planner、executor、roles、skills、tools、policy、storage 和 runtime 主体。
-- `src/server/routes/`：运行、配置、凭据、模型目录和 OpenAI Codex OAuth 的 API 路由。
-- `src/common/openai_codex.py`：OpenAI Codex OAuth、profile vault、模型发现与缓存逻辑。
-- `src/ingest/` 与 `src/retrieval/`：文档解析、抓取、embedding、BM25、reranker 与索引支持。
-- `frontend/`：会话、运行状态、路线图、遥测、设置、鉴权与模型管理界面。
-- `tests/`：按 phase 组织的后端/运行时/API 测试。
-
-`dynamic_os` 是当前活跃运行时。仓库里仍保留了一些检索相关辅助模块，但实时应用路径已经集中在 `app.py`、`scripts/run_agent.py`、`src/dynamic_os/` 和 `src/server/`。
-
-## 当前能力
-
-- 基于 planner 生成 DAG，再由 executor 按 role/skill/tool 执行。
-- 内置技能覆盖研究规划、论文搜索、全文抓取、笔记提取、证据图构建、实验设计/执行、报告撰写与审阅。
-- 通过 MCP 发现并接入工具后端，默认按 `llm`、`search`、`retrieval`、`exec` 四类 server id 拆分。
-- 运行时与前端都支持多模型提供方：`openai_codex`、`openai`、`gemini`、`openrouter`、`siliconflow`。
-- 后端与前端支持模型目录加载、API Key 持久化、OpenAI Codex OAuth 登录/回调/登出/校验。
-- 后端通过 SSE 向前端流式发送 route plan、节点状态、产物和原始日志。
-- 前端本地保存会话，并提供模型、对话、工具、外观、数据/存储、安全、关于等设置分区。
-
-## 架构概览
-
-主执行链路：
-
-`planner -> executor -> role -> skill -> tool`
-
-关键模块：
-
-- `src/dynamic_os/runtime.py`：加载配置、启动 MCP 运行时、组装 policy/planner/executor/store，并写出运行产物。
-- `src/dynamic_os/planner/`：生成并校验 route plan。
-- `src/dynamic_os/executor/`：执行 DAG 节点、发送运行事件、在最终产物就绪后结束运行。
-- `src/dynamic_os/roles/roles.yaml`：角色定义与技能白名单。
-- `src/dynamic_os/skills/builtins/`：内置技能包。
-- `src/dynamic_os/tools/`：工具注册、MCP 发现、统一 gateway 和 provider backend。
-- `src/server/routes/runs.py`：`/api/run` SSE 流和 `/api/run/stop`。
-- `src/server/routes/config.py`：配置与凭据持久化，以及 Codex OAuth 接口。
-- `src/server/routes/models.py`：各 provider 的模型目录接口。
-
-## 快速开始
-
-### 1. 安装 Python 依赖
-
-```bash
-pip install -U pip
-pip install -e .
+```
+用户输入研究主题
+    │
+    ▼
+┌─────────────────────────────────────────────────┐
+│  Planner（规划器）                                │
+│  根据用户请求 + 当前 artifacts 生成执行 DAG        │
+│  失败时自动 fallback 到多步确定性计划              │
+└───────────────────┬─────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────────┐
+│  Executor（执行器）                               │
+│  按 DAG 拓扑顺序执行节点                          │
+│  处理 edge 条件（on_success / on_failure）        │
+└───────────────────┬─────────────────────────────┘
+                    │
+    ┌───────────────┼───────────────┐
+    ▼               ▼               ▼
+┌────────┐   ┌──────────┐   ┌────────┐
+│conductor│   │researcher│   │ writer │  ... 6 个角色
+│规划研究 │   │搜索/提取 │   │撰写报告│
+└────┬───┘   └────┬─────┘   └────┬───┘
+     │            │              │
+     ▼            ▼              ▼
+  Skills       Skills         Skills
+(plan_research) (search_papers,  (draft_report)
+                extract_notes,
+                build_evidence_map)
+     │            │              │
+     ▼            ▼              ▼
+  Tools        Tools          Tools
+(mcp.llm.chat) (mcp.search.papers) (mcp.llm.chat)
 ```
 
-### 2. 安装前端依赖
+### 角色与技能
+
+| 角色 | 职责 | 技能 | 产出 |
+|------|------|------|------|
+| conductor | 分解任务、制定检索计划 | plan_research | TopicBrief, SearchPlan |
+| researcher | 搜索论文、提取笔记、构建证据图 | search_papers, fetch_fulltext, extract_notes, build_evidence_map | SourceSet, PaperNotes, EvidenceMap, GapMap |
+| experimenter | 设计和执行实验 | design_experiment, run_experiment | ExperimentPlan, ExperimentResults |
+| analyst | 分析实验结果 | analyze_metrics | ExperimentAnalysis, PerformanceMetrics |
+| writer | 撰写学术综述 | draft_report | ResearchReport（LaTeX） |
+| reviewer | 审阅报告 | review_artifact | ReviewVerdict |
+
+### 技术栈
+
+- **后端**：Python 3.10+ / FastAPI / uvicorn / SSE 流式推送
+- **前端**：React 19 / TypeScript / Vite / Tailwind CSS
+- **LLM**：OpenRouter / OpenAI / Gemini / SiliconFlow（通过统一接口）
+- **检索**：arXiv / Semantic Scholar / ChromaDB / FAISS / BM25
+- **工具通信**：MCP（Model Context Protocol）stdio 协议
+- **输出**：LaTeX + BibTeX + pdflatex 编译
+
+## 快速入门
+
+### 1. 环境准备
 
 ```bash
+# Python 3.10+
+python --version
+
+# Node.js 20+
+node --version
+
+# LaTeX（用于 PDF 编译，可选）
+pdflatex --version
+```
+
+### 2. 安装
+
+```bash
+git clone https://github.com/szaaaaaa/ResearchAgent.git
+cd ResearchAgent
+
+# 安装 Python 依赖
+pip install -e .
+pip install feedparser
+
+# 安装前端依赖
 cd frontend
-npm install
+npm ci
 cd ..
 ```
 
-### 3. 配置模型与凭据
+### 3. 配置 API Key
 
-有两种配置方式：
-
-- 直接编辑 `configs/agent.yaml` 和 `.env`
-- 启动前端，在设置界面中保存配置
-
-当前实现中的行为：
-
-- 运行时配置写回 `configs/agent.yaml`
-- API 凭据写回 `.env`
-- 仓库自带的 `configs/agent.yaml` 当前默认 provider 是 `openrouter`，默认模型是 Gemini
-- UI 和后端同时支持 `openai_codex`、`openai`、`gemini`、`siliconflow`
-
-后端识别的凭据键包括：
-
-- `OPENAI_API_KEY`
-- `GEMINI_API_KEY`
-- `OPENROUTER_API_KEY`
-- `SILICONFLOW_API_KEY`
-- `GOOGLE_API_KEY`
-- `SERPAPI_API_KEY`
-- `GOOGLE_CSE_API_KEY`
-- `GOOGLE_CSE_CX`
-- `BING_API_KEY`
-- `GITHUB_TOKEN`
-
-### 4. 可选：启用 OpenAI Codex OAuth
-
-如果你想使用 `openai_codex` provider，而不是普通 API Key：
-
-- 在 Models 设置中选择 `openai_codex`
-- 模型名使用 `openai-codex/<model>` 形式，例如 `openai-codex/gpt-5.4`
-- 从 UI 或 `/api/codex/login` 发起登录
-- 完成浏览器回调后，再校验选定模型
-
-Codex 鉴权默认保存在仓库外：
-
-- Windows：`%LOCALAPPDATA%\ResearchAgent\auth\profiles.json`
-- Linux/macOS：`$XDG_STATE_HOME/research-agent/auth/profiles.json` 或 `~/.research-agent/auth/profiles.json`
-
-如果需要改位置，设置 `RESEARCH_AGENT_AUTH_DIR`。
-
-### 5. 启动后端
+至少需要一个 LLM provider 的 API key。在项目根目录创建 `.env` 文件：
 
 ```bash
-python app.py
+# 推荐：OpenRouter（统一入口，支持多种模型）
+OPENROUTER_API_KEY="sk-or-v1-..."
+
+# 或者直接使用各供应商的 key
+OPENAI_API_KEY="sk-..."
+GEMINI_API_KEY="AIza..."
+
+# 搜索增强（可选，但推荐）
+SERPAPI_API_KEY="..."
 ```
 
-FastAPI 默认监听 `http://localhost:8000`。
+也可以设置为系统环境变量，系统会自动检测。
 
-### 6. 启动前端开发模式
+### 4. 启动
 
 ```bash
+# 终端 1：启动后端
+python app.py
+# 后端运行在 http://127.0.0.1:8000
+
+# 终端 2：启动前端开发服务器
 cd frontend
 npm run dev
+# 前端运行在 http://localhost:3000
 ```
 
-开发服务器默认在 `http://localhost:3000`，并连接 `8000` 端口的后端。
+打开浏览器访问 `http://localhost:3000`。
 
-### 7. 可选：由 FastAPI 直接托管前端构建产物
+### 5. 开始研究
 
-```bash
-cd frontend
-npm run build
-cd ..
-python app.py
+在输入框中输入研究主题，例如：
+- `Retrieval-Augmented Generation 的最新进展`
+- `大语言模型的幻觉问题`
+- `多模态学习在医学影像中的应用`
+
+系统会自动执行：规划 → 搜索论文 → 提取笔记 → 构建证据图 → 撰写综述。完成后可下载 PDF 和 LaTeX 源文件。
+
+## 推荐参数配置
+
+### 模型配置（configs/agent.yaml 或前端设置）
+
+不同角色对 LLM 能力要求不同，推荐差异化配置以平衡成本和质量：
+
+```yaml
+llm:
+  role_models:
+    # 便宜模型即可 — 输出短、有 fallback 兜底
+    conductor:
+      provider: openrouter
+      model: google/gemini-2.0-flash-001
+
+    # 中等模型 — 需要准确的信息提取和摘要能力
+    researcher:
+      provider: openrouter
+      model: google/gemini-2.0-flash-001
+
+    # 便宜模型即可 — 不常用
+    experimenter:
+      provider: openrouter
+      model: google/gemini-2.0-flash-001
+
+    # 中等模型 — 数据理解
+    analyst:
+      provider: openrouter
+      model: google/gemini-2.0-flash-001
+
+    # 必须用最强模型 — 直接决定报告质量
+    writer:
+      provider: openrouter
+      model: openai/gpt-4o  # 或 anthropic/claude-sonnet-4
+
+    # 中等偏高 — 需要批判性判断
+    reviewer:
+      provider: openrouter
+      model: google/gemini-2.0-flash-001
 ```
 
-如果 `frontend/dist/` 存在，`app.py` 会直接在 `http://localhost:8000/` 提供前端页面。
+### 搜索与报告参数
 
-## CLI 用法
+```yaml
+agent:
+  max_iterations: 8          # planner 最大迭代轮数
+  papers_per_query: 15       # 每个搜索 query 请求的论文数
+  report_max_sources: 40     # 报告最大引用源数
+  language: zh               # 报告语言：zh（中文）或 en（英文）
 
-从命令行直接发起研究任务：
+providers:
+  search:
+    query_all_academic: true  # 同时查 arXiv 和 Semantic Scholar
 
-```bash
-python -m scripts.run_agent --topic "retrieval augmented generation"
+sources:
+  arxiv:
+    enabled: true
+    max_results_per_query: 30
+  semantic_scholar:
+    enabled: true
+    max_results_per_query: 30
 ```
 
-也可以传入完整请求：
+### 预算控制
 
-```bash
-python -m scripts.run_agent --user_request "Compare retrieval planning approaches for local research agents"
-```
-
-如有需要，可显式指定工作区内的输出目录：
-
-```bash
-python -m scripts.run_agent --topic "dynamic planning" --output_dir ./outputs
-```
-
-构建或刷新本地索引：
-
-```bash
-python -m scripts.build_index --papers_dir data/papers
-```
-
-只索引单个 PDF：
-
-```bash
-python -m scripts.build_index --papers_dir data/papers --pdf_path my_paper.pdf --doc_id paper_001
-```
-
-## 前端与 API 工作流
-
-React 前端不是静态展示页，而是直接驱动运行时：
-
-- 侧边栏负责本地会话管理
-- 运行页可以启动/停止任务，并展示 route graph、事件时间线、产物和原始日志
-- 设置弹窗负责编辑运行时配置、凭据、模型/provider 选择和安全/鉴权状态
-
-重要接口：
-
-- `GET /api/config`，`POST /api/config`
-- `GET /api/credentials`，`POST /api/credentials`
-- `POST /api/run`，`POST /api/run/stop`
-- `GET /api/codex/status`，`POST /api/codex/login`，`POST /api/codex/callback`，`POST /api/codex/logout`，`POST /api/codex/verify`
-- `GET /api/codex/models`
-- `GET /api/openai/models`
-- `GET /api/gemini/models`
-- `GET /api/openrouter/models`
-- `GET /api/siliconflow/models`
-
-## 配置说明
-
-`configs/agent.yaml` 是运行时行为的唯一事实来源。当前主要配置结构包括：
-
-- `mcp.servers`：`llm`、`search`、`retrieval`、`exec` 四类 stdio MCP server
-- `llm.provider` 与 `llm.role_models.*`：各角色的 provider/model 选择
-- `agent.routing.planner_llm`：planner 专用模型配置
-- `auth.openai_codex`：默认 profile、白名单、锁定策略和显式切换策略
-- `sources.*`：检索源开关与上限
-- `retrieval.*`：embedding、reranker 与检索行为
-- `budget_guard.*`：token/API/运行时长预算限制
-
-后端在读取和写入配置时，会把旧的 `critic` 角色自动规范为 `reviewer`。
-
-## 输出目录
-
-API 和 CLI 默认把运行结果写到仓库根目录下的 `outputs/`：
-
-```text
-outputs/run_<timestamp>/
-```
-
-每次运行通常会生成：
-
-- `events.log`
-- `run_snapshot.json`
-- `artifacts.json`
-- `research_report.md`
-- `research_state.json`
-
-## 测试
-
-运行全部 Python 测试：
-
-```bash
-pytest
-```
-
-直接运行 phase 测试套件：
-
-```bash
-pytest tests/test_dynamic_os_phase1.py tests/test_dynamic_os_phase2.py tests/test_dynamic_os_phase3.py -q
-```
-
-检查前端 TypeScript 和构建：
-
-```bash
-cd frontend
-npm run lint
-npm run build
+```yaml
+budget_guard:
+  max_tokens: 1000000        # 单次 run 最大 token 消耗
+  max_api_calls: 1000        # 最大 API 调用次数
+  max_wall_time_sec: 3600    # 最大运行时间（秒）
 ```
 
 ## 项目结构
 
-```text
-ResearchAgent/
-|-- app.py
-|-- configs/
-|   `-- agent.yaml
-|-- frontend/
-|-- scripts/
-|   |-- build_index.py
-|   |-- dynamic_os_mcp_server.py
-|   `-- run_agent.py
-|-- src/
-|   |-- common/
-|   |-- dynamic_os/
-|   |-- ingest/
-|   |-- rag/
-|   |-- retrieval/
-|   |-- server/
-|   `-- workflows/
-`-- tests/
 ```
+ResearchAgent/
+├── app.py                    # FastAPI 入口
+├── configs/agent.yaml        # 主配置文件
+├── CLAUDE.md                 # Claude Code 行为约束
+│
+├── src/
+│   ├── dynamic_os/           # 核心运行时
+│   │   ├── runtime.py        # 运行时入口和 LaTeX 编译
+│   │   ├── planner/          # DAG 规划器
+│   │   ├── executor/         # DAG 执行器
+│   │   ├── roles/            # 角色定义（YAML）
+│   │   ├── skills/builtins/  # 内置技能（10 个）
+│   │   ├── tools/            # 工具注册和 MCP 网关
+│   │   ├── contracts/        # 类型定义
+│   │   ├── policy/           # 预算和权限策略
+│   │   └── storage/          # 内存存储
+│   │
+│   ├── server/routes/        # API 路由
+│   │   ├── runs.py           # 研究运行（SSE 流式）
+│   │   ├── config.py         # 配置和凭证管理
+│   │   └── models.py         # 模型目录
+│   │
+│   ├── ingest/               # 文档摄入（PDF、LaTeX、Web）
+│   └── retrieval/            # 检索（FAISS、ChromaDB、BM25）
+│
+├── frontend/src/
+│   ├── store.tsx             # 全局状态管理
+│   ├── components/
+│   │   ├── tabs/RunTab.tsx   # 运行界面
+│   │   ├── tabs/HistoryTab.tsx
+│   │   ├── RouteGraph.tsx    # 执行图可视化
+│   │   ├── BehaviorTimeline.tsx
+│   │   └── settings/        # 设置面板（8 个区域）
+│   └── types.ts
+│
+├── scripts/
+│   ├── run_agent.py          # 无头 CLI 运行
+│   └── dynamic_os_mcp_server.py  # MCP 工具服务器
+│
+├── data/outputs/             # 运行产出
+│   └── run_YYYYMMDD_HHMMSS/
+│       ├── research_report.tex   # LaTeX 源文件
+│       ├── references.bib        # BibTeX 引用
+│       ├── research_report.pdf   # 编译后的 PDF
+│       ├── artifacts_full.json   # 完整产物数据
+│       └── events.log            # 事件日志
+│
+└── tests/                    # 测试套件（108 个测试）
+```
+
+## API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/run` | 启动研究任务（SSE 流式返回） |
+| POST | `/api/run/stop` | 停止运行中的任务 |
+| GET | `/api/runs` | 历史运行列表 |
+| GET | `/api/runs/{id}/state` | 运行状态 |
+| GET | `/api/runs/{id}/artifacts` | 产物列表 |
+| GET | `/api/runs/{id}/artifacts/{aid}` | 产物详情 |
+| GET | `/api/runs/{id}/report.pdf` | 下载 PDF |
+| GET | `/api/runs/{id}/report.tex` | 下载 LaTeX |
+| GET | `/api/runs/{id}/references.bib` | 下载 BibTeX |
+| GET | `/api/runs/{id}/latex.zip` | 下载 LaTeX 压缩包 |
+| GET | `/api/config` | 获取配置 |
+| POST | `/api/config` | 保存配置 |
+| GET | `/api/credentials` | 获取凭证状态 |
+| POST | `/api/credentials` | 保存凭证 |
+
+## 常见问题
+
+**Q: 搜索不到论文？**
+确认 arXiv 和 Semantic Scholar 已启用（`configs/agent.yaml` 中 `sources.arxiv.enabled: true`）。中文主题会自动翻译为英文搜索词。如果仍然为空，检查网络连接。
+
+**Q: PDF 中引用显示为 `?`？**
+重启后端使最新代码生效。系统会从 SourceSet 自动生成 `references.bib` 并用 `pdflatex + bibtex` 编译。
+
+**Q: 报告内容太短？**
+增大 `papers_per_query`（每 query 论文数）和 `report_max_sources`（最大引用数）。同时确保 writer 角色使用高性能模型（GPT-4o 或 Claude Sonnet）。
+
+**Q: 运行超时或超出预算？**
+增大 `agent.max_iterations`（默认 8）和 `budget_guard.max_wall_time_sec`（默认 3600s）。
+
+**Q: 如何在 Overleaf 上编辑？**
+下载 LaTeX 压缩包（`.tex` + `.bib`），上传到 Overleaf。将 `\documentclass{article}` 替换为 `\usepackage{neurips_2024}` 即可使用 NeurIPS 模板。
+
+## 许可证
+
+MIT License
