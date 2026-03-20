@@ -148,7 +148,7 @@ class RoleRoutingDecision(BaseModel):
 
 
 def derive_role_routing_policy(*, user_request: str, artifacts: list[ArtifactRecord]) -> RoleRoutingPolicy:
-    artifact_types = {record.artifact_type for record in artifacts}
+    artifact_types = {record.type for record in artifacts}
     intents = _detect_intents(user_request)
     required_roles: list[str] = []
     preferred_roles: list[str] = []

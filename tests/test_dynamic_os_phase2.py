@@ -14,7 +14,7 @@ from src.dynamic_os.contracts.skill_spec import SkillPermissions
 from src.dynamic_os.policy.engine import BudgetExceededError, PolicyEngine, PolicyViolationError
 from src.dynamic_os.tools import backends as backends_module
 from src.dynamic_os.tools.backends import ConfiguredLLMClient
-from src.dynamic_os.tools.discovery import start_mcp_runtime
+from src.dynamic_os.tools.mcp_session import start_mcp_runtime
 from src.dynamic_os.tools.gateway import ToolGateway
 from src.dynamic_os.tools.registry import ToolCapability, ToolRegistry
 

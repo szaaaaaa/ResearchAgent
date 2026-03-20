@@ -158,10 +158,35 @@ class PolicyEngine:
                     return True
         return False
 
+    _CONFIG_NAME_PATTERNS = frozenset(
+        {
+            ".env",
+            "config.yaml",
+            "config.yml",
+            "config.json",
+            "settings.yaml",
+            "settings.yml",
+            "settings.json",
+            "pyproject.toml",
+            "setup.cfg",
+        }
+    )
+    _CONFIG_DIR_NAMES = frozenset({"configs", "config", "secrets", ".secrets"})
+    _CONFIG_SUFFIX_PATTERNS = (".toml", ".key", ".pem", ".crt", ".cer", ".p12", ".pfx")
+    _CONFIG_STEM_PATTERNS = ("credential", "secret", "apikey", "api_key", "token", "password")
+
     def _is_config_path(self, candidate: Path) -> bool:
-        if candidate.name == ".env":
+        name = candidate.name.casefold()
+        if name in self._CONFIG_NAME_PATTERNS:
             return True
-        return any(part.casefold() == "configs" for part in candidate.parts)
+        if any(part.casefold() in self._CONFIG_DIR_NAMES for part in candidate.parts):
+            return True
+        if candidate.suffix.casefold() in self._CONFIG_SUFFIX_PATTERNS:
+            return True
+        stem = candidate.stem.casefold()
+        if any(pattern in stem for pattern in self._CONFIG_STEM_PATTERNS):
+            return True
+        return False
 
     def _is_blocked_powershell_delete(self, command: str) -> bool:
         if not re.search(r"(?<![a-z])remove-item(?![a-z])", command):

@@ -15,7 +15,7 @@ async def run(ctx: SkillContext) -> SkillOutput:
             {
                 "role": "user",
                 "content": "\n".join(
-                    f"{artifact.artifact_type}: {artifact.payload}"
+                    f"{artifact.type}: {artifact.metadata}"
                     for artifact in ctx.input_artifacts
                 )
                 or ctx.goal,

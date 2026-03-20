@@ -21,8 +21,8 @@ async def run(ctx: SkillContext) -> SkillOutput:
             {
                 "role": "user",
                 "content": (
-                    f"Artifact type: {target.artifact_type}\n"
-                    f"Artifact payload: {target.payload}\n"
+                    f"Artifact type: {target.type}\n"
+                    f"Artifact payload: {target.metadata}\n"
                     f"Strengths: {strengths}\n"
                     f"Issues: {issues}"
                 ),
@@ -38,7 +38,7 @@ async def run(ctx: SkillContext) -> SkillOutput:
         producer_skill=ctx.skill_id,
         payload={
             "target_artifact_id": target.artifact_id,
-            "target_type": target.artifact_type,
+            "target_type": target.type,
             "verdict": verdict,
             "review": review_text,
             "issues": issues,
@@ -50,39 +50,39 @@ async def run(ctx: SkillContext) -> SkillOutput:
 
 
 def _issues(target) -> list[str]:
-    payload = dict(target.payload) if isinstance(target.payload, dict) else {}
+    payload = dict(target.metadata) if isinstance(target.metadata, dict) else {}
     issues: list[str] = []
     if not payload:
         return ["artifact payload is empty"]
-    if target.artifact_type == "ResearchReport" and not str(payload.get("report") or "").strip():
+    if target.type == "ResearchReport" and not str(payload.get("report") or "").strip():
         issues.append("missing report text")
-    if target.artifact_type == "SourceSet":
+    if target.type == "SourceSet":
         sources = list(payload.get("sources") or [])
         if not sources:
             issues.append("no sources were collected")
         if int(payload.get("result_count") or len(sources) or 0) <= 0:
             issues.append("source set does not contain usable results")
-    if target.artifact_type == "ExperimentPlan":
+    if target.type == "ExperimentPlan":
         for key in ("plan", "language", "code"):
             if not str(payload.get(key) or "").strip():
                 issues.append(f"missing {key}")
-    if target.artifact_type == "ReviewVerdict" and not str(payload.get("review") or "").strip():
+    if target.type == "ReviewVerdict" and not str(payload.get("review") or "").strip():
         issues.append("missing review body")
     return issues
 
 
 def _strengths(target) -> list[str]:
-    payload = dict(target.payload) if isinstance(target.payload, dict) else {}
+    payload = dict(target.metadata) if isinstance(target.metadata, dict) else {}
     strengths: list[str] = []
-    if target.artifact_type == "ResearchReport" and str(payload.get("report") or "").strip():
+    if target.type == "ResearchReport" and str(payload.get("report") or "").strip():
         strengths.append("contains report text")
-    if target.artifact_type == "SourceSet":
+    if target.type == "SourceSet":
         result_count = int(payload.get("result_count") or len(payload.get("sources", [])) or 0)
         if result_count > 0:
             strengths.append(f"contains {result_count} collected sources")
-    if target.artifact_type == "ExperimentPlan" and str(payload.get("code") or "").strip():
+    if target.type == "ExperimentPlan" and str(payload.get("code") or "").strip():
         strengths.append("includes executable code")
-    if target.artifact_type == "ReviewVerdict" and str(payload.get("verdict") or "").strip():
+    if target.type == "ReviewVerdict" and str(payload.get("verdict") or "").strip():
         strengths.append("contains an explicit verdict")
     if payload and not strengths:
         strengths.append("artifact payload is populated")

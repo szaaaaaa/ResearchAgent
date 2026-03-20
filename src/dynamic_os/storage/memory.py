@@ -47,7 +47,7 @@ class InMemoryArtifactStore:
         return self._records.get(artifact_id)
 
     def list_by_type(self, artifact_type: str) -> list[ArtifactRecord]:
-        return [record for record in self._records.values() if record.artifact_type == artifact_type]
+        return [record for record in self._records.values() if record.type == artifact_type]
 
     def list_all(self) -> list[ArtifactRecord]:
         return list(self._records.values())
@@ -56,7 +56,7 @@ class InMemoryArtifactStore:
         return [
             {
                 "artifact_id": record.artifact_id,
-                "artifact_type": record.artifact_type,
+                "type": record.type,
                 "artifact_ref": artifact_ref_for_record(record),
                 "producer_role": record.producer_role.value,
             }

@@ -23,7 +23,7 @@ def _now_iso() -> str:
 
 
 def _artifact_ref(record) -> str:
-    return f"artifact:{record.artifact_type}:{record.artifact_id}"
+    return f"artifact:{record.type}:{record.artifact_id}"
 
 
 @dataclass(frozen=True)
@@ -215,10 +215,10 @@ class Executor:
         if execution.should_replan:
             return False
         records = list(self._artifact_store.list_all())
-        artifact_summaries = [{"artifact_type": record.artifact_type} for record in records]
+        artifact_summaries = [{"type": record.type} for record in records]
         if not decide_termination(artifact_summaries):
             return False
-        artifact_types = {record.artifact_type for record in records}
+        artifact_types = {record.type for record in records}
         if "ReviewVerdict" in artifact_types:
             return True
         if "ResearchReport" not in artifact_types:

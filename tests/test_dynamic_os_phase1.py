@@ -70,7 +70,7 @@ def test_memory_stores_round_trip() -> None:
 
     artifact = ArtifactRecord(
         artifact_id="tb_1",
-        artifact_type="TopicBrief",
+        type="TopicBrief",
         producer_role=RoleId.conductor,
         producer_skill="plan_research",
     )
@@ -102,7 +102,8 @@ def test_memory_stores_round_trip() -> None:
     assert artifact_store.summary() == [
         {
             "artifact_id": "tb_1",
-            "artifact_type": "TopicBrief",
+            "type": "TopicBrief",
+            "artifact_ref": "artifact:TopicBrief:tb_1",
             "producer_role": "conductor",
         }
     ]

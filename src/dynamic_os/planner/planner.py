@@ -282,10 +282,10 @@ class Planner:
                     self._fallback_node(
                         node_id="node_conductor_plan",
                         role=RoleId.conductor,
-                        goal="制定研究主题简报与检索计划",
+                        goal="Draft research topic brief and retrieval plan",
                         inputs=[],
                         allowed_skills=["plan_research"],
-                        success_criteria=["生成 TopicBrief 和 SearchPlan"],
+                        success_criteria=["Produce TopicBrief and SearchPlan"],
                         expected_outputs=["TopicBrief", "SearchPlan"],
                     )
                 ],
@@ -304,10 +304,10 @@ class Planner:
                         self._fallback_node(
                             node_id="node_experimenter_design",
                             role=RoleId.experimenter,
-                            goal="基于当前证据设计可执行实验",
+                            goal="Design a runnable experiment based on current evidence",
                             inputs=self._preferred_inputs(latest_by_type, ["SearchPlan", "EvidenceMap", "GapMap"]),
                             allowed_skills=["design_experiment"],
-                            success_criteria=["生成 ExperimentPlan"],
+                            success_criteria=["Produce ExperimentPlan"],
                             expected_outputs=["ExperimentPlan"],
                         )
                     ],
@@ -324,10 +324,10 @@ class Planner:
                         self._fallback_node(
                             node_id="node_experimenter_run",
                             role=RoleId.experimenter,
-                            goal="执行实验计划并收集结果",
+                            goal="Execute the experiment plan and collect results",
                             inputs=self._preferred_inputs(latest_by_type, ["ExperimentPlan"]),
                             allowed_skills=["run_experiment"],
-                            success_criteria=["生成 ExperimentResults"],
+                            success_criteria=["Produce ExperimentResults"],
                             expected_outputs=["ExperimentResults"],
                         )
                     ],
@@ -344,10 +344,10 @@ class Planner:
                         self._fallback_node(
                             node_id="node_analyst_metrics",
                             role=RoleId.analyst,
-                            goal="分析实验结果并生成指标摘要",
+                            goal="Analyze experiment results and produce metric summary",
                             inputs=self._preferred_inputs(latest_by_type, ["ExperimentResults", "SourceSet", "PaperNotes"]),
                             allowed_skills=["analyze_metrics"],
-                            success_criteria=["生成 ExperimentAnalysis 和 PerformanceMetrics"],
+                            success_criteria=["Produce ExperimentAnalysis and PerformanceMetrics"],
                             expected_outputs=["ExperimentAnalysis", "PerformanceMetrics"],
                         )
                     ],
@@ -365,10 +365,10 @@ class Planner:
                     self._fallback_node(
                         node_id="node_researcher_search",
                         role=RoleId.researcher,
-                        goal="根据检索计划搜集相关资料",
+                        goal="Gather relevant sources according to the retrieval plan",
                         inputs=self._preferred_inputs(latest_by_type, ["SearchPlan", "TopicBrief"]),
                         allowed_skills=["search_papers"],
-                        success_criteria=["生成 SourceSet"],
+                        success_criteria=["Produce SourceSet"],
                         expected_outputs=["SourceSet"],
                     )
                 ],
@@ -386,10 +386,10 @@ class Planner:
                     self._fallback_node(
                         node_id="node_researcher_evidence",
                         role=RoleId.researcher,
-                        goal="综合已有材料构建证据图和研究空白",
+                        goal="Synthesize available materials into an evidence map and gap analysis",
                         inputs=self._preferred_inputs(latest_by_type, ["PaperNotes", "SourceSet", "ExperimentResults"]),
                         allowed_skills=["build_evidence_map"],
-                        success_criteria=["生成 EvidenceMap 和 GapMap"],
+                        success_criteria=["Produce EvidenceMap and GapMap"],
                         expected_outputs=["EvidenceMap", "GapMap"],
                     )
                 ],
@@ -407,13 +407,13 @@ class Planner:
                     self._fallback_node(
                         node_id="node_writer_report",
                         role=RoleId.writer,
-                        goal="根据证据产出最终研究报告",
+                        goal="Produce the final research report from evidence",
                         inputs=self._preferred_inputs(
                             latest_by_type,
                             ["EvidenceMap", "GapMap", "ExperimentAnalysis", "PerformanceMetrics"],
                         ),
                         allowed_skills=["draft_report"],
-                        success_criteria=["生成 ResearchReport"],
+                        success_criteria=["Produce ResearchReport"],
                         expected_outputs=["ResearchReport"],
                     )
                 ],
@@ -431,10 +431,10 @@ class Planner:
                     self._fallback_node(
                         node_id="node_reviewer_review",
                         role=RoleId.reviewer,
-                        goal="审阅最终研究报告并给出结论",
+                        goal="Review the final research report and deliver a verdict",
                         inputs=self._preferred_inputs(latest_by_type, ["ResearchReport"]),
                         allowed_skills=["review_artifact"],
-                        success_criteria=["生成 ReviewVerdict"],
+                        success_criteria=["Produce ReviewVerdict"],
                         expected_outputs=["ReviewVerdict"],
                     )
                 ],
@@ -451,13 +451,13 @@ class Planner:
                 self._fallback_node(
                     node_id="node_writer_finalize",
                     role=RoleId.writer,
-                    goal=f"总结并结束当前任务：{user_request[:80]}",
+                    goal=f"Summarize and conclude the current task: {user_request[:80]}",
                     inputs=self._preferred_inputs(
                         latest_by_type,
                         ["ResearchReport", "EvidenceMap", "ExperimentAnalysis", "PerformanceMetrics"],
                     ),
                     allowed_skills=["draft_report"],
-                    success_criteria=["确认已有结果足以结束本轮任务"],
+                    success_criteria=["Confirm existing results are sufficient to conclude this round"],
                     expected_outputs=["ResearchReport"],
                 )
             ],
@@ -492,7 +492,7 @@ class Planner:
     def _latest_artifact_refs_by_type(self) -> dict[str, str]:
         latest: dict[str, str] = {}
         for record in self._artifact_store.list_all():
-            latest[record.artifact_type] = artifact_ref_for_record(record)
+            latest[record.type] = artifact_ref_for_record(record)
         return latest
 
     def _preferred_inputs(self, latest_by_type: dict[str, str], preferred_types: list[str]) -> list[str]:
@@ -667,7 +667,7 @@ class Planner:
                     )
 
     def _validate_post_report_progression(self, plan: RoutePlan, routing_policy: RoleRoutingPolicy) -> None:
-        artifact_types = {record.artifact_type for record in self._artifact_store.list_all()}
+        artifact_types = {record.type for record in self._artifact_store.list_all()}
         has_report = "ResearchReport" in artifact_types
         has_review = "ReviewVerdict" in artifact_types
         review_requested = "review" in set(routing_policy.intents)

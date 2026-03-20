@@ -6,7 +6,7 @@ from src.dynamic_os.contracts.skill_io import SkillContext, SkillOutput
 
 
 async def run(ctx: SkillContext) -> SkillOutput:
-    artifact_types = [artifact.artifact_type for artifact in ctx.input_artifacts]
+    artifact_types = [artifact.type for artifact in ctx.input_artifacts]
     evidence_items = _evidence_items(ctx)
     gaps = _derive_gaps(ctx)
     synthesis = await ctx.tools.llm_chat(
@@ -63,7 +63,7 @@ def _snippet(value: object, *, limit: int = 240) -> str:
 def _evidence_items(ctx: SkillContext) -> list[dict]:
     items: list[dict] = []
     for artifact in ctx.input_artifacts:
-        payload = dict(artifact.payload)
+        payload = dict(artifact.metadata)
         summary = (
             payload.get("summary")
             or payload.get("brief")
@@ -74,16 +74,16 @@ def _evidence_items(ctx: SkillContext) -> list[dict]:
         )
         item = {
             "artifact_id": artifact.artifact_id,
-            "artifact_type": artifact.artifact_type,
+            "artifact_type": artifact.type,
             "producer_skill": artifact.producer_skill,
             "summary": _snippet(summary),
         }
-        if artifact.artifact_type == "SourceSet":
+        if artifact.type == "SourceSet":
             item["result_count"] = int(payload.get("result_count") or len(payload.get("sources", [])) or 0)
             item["warning_count"] = len(payload.get("warnings", []) or [])
-        if artifact.artifact_type == "PaperNotes":
+        if artifact.type == "PaperNotes":
             item["note_count"] = len(payload.get("notes", []) or [])
-        if artifact.artifact_type == "ExperimentResults":
+        if artifact.type == "ExperimentResults":
             metrics = dict(payload.get("metrics", {})) if isinstance(payload.get("metrics"), dict) else {}
             item["metric_count"] = len(metrics)
         items.append(item)
@@ -91,9 +91,9 @@ def _evidence_items(ctx: SkillContext) -> list[dict]:
 
 
 def _derive_gaps(ctx: SkillContext) -> list[str]:
-    artifact_types = {artifact.artifact_type for artifact in ctx.input_artifacts}
+    artifact_types = {artifact.type for artifact in ctx.input_artifacts}
     gaps: list[str] = []
-    source_sets = [dict(artifact.payload) for artifact in ctx.input_artifacts if artifact.artifact_type == "SourceSet"]
+    source_sets = [dict(artifact.metadata) for artifact in ctx.input_artifacts if artifact.type == "SourceSet"]
     if not source_sets:
         gaps.append("尚未形成可用的来源集合。")
     else:

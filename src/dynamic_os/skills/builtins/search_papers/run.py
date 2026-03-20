@@ -8,7 +8,7 @@ from src.dynamic_os.contracts.skill_io import SkillContext, SkillOutput
 
 def _find_artifact(ctx: SkillContext, artifact_type: str) -> ArtifactRecord | None:
     for artifact in ctx.input_artifacts:
-        if artifact.artifact_type == artifact_type:
+        if artifact.type == artifact_type:
             return artifact
     return None
 
@@ -18,7 +18,7 @@ async def run(ctx: SkillContext) -> SkillOutput:
     if search_plan is None:
         return SkillOutput(success=False, error="search_papers requires a SearchPlan artifact")
 
-    payload = dict(search_plan.payload)
+    payload = dict(search_plan.metadata)
     queries = [str(item).strip() for item in payload.get("search_queries", []) if str(item).strip()]
     routes = dict(payload.get("query_routes", {})) if isinstance(payload.get("query_routes"), dict) else {}
     resolved_queries = queries or [ctx.goal]

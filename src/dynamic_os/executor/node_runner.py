@@ -76,7 +76,7 @@ class NodeRunner:
         )
 
         started_at = time.perf_counter()
-        skill_id = node.allowed_skills[0]
+        skill_id = "unknown"
         artifacts: list[ArtifactRecord] = []
 
         try:
@@ -156,7 +156,7 @@ class NodeRunner:
                         ts=_now_iso(),
                         run_id=run_id,
                         artifact_id=artifact.artifact_id,
-                        artifact_type=artifact.artifact_type,
+                        artifact_type=artifact.type,
                         producer_role=artifact.producer_role.value,
                         producer_skill=artifact.producer_skill,
                     )
@@ -273,7 +273,7 @@ class NodeRunner:
             record = self._artifact_store.get(artifact_id)
             if record is None:
                 raise ValueError(f"缺少输入产物：{artifact_id}")
-            if record.artifact_type != artifact_type:
+            if record.type != artifact_type:
                 raise ValueError(f"输入产物类型不匹配：{artifact_id}，期望 {artifact_type}")
             artifacts.append(record)
         return artifacts
@@ -282,7 +282,7 @@ class NodeRunner:
         if len(node.allowed_skills) == 1:
             return self._skill_registry.get(node.allowed_skills[0])
 
-        available_types = {artifact.artifact_type for artifact in input_artifacts}
+        available_types = {artifact.type for artifact in input_artifacts}
         candidates: list[tuple[LoadedSkill, int, int]] = []
         for position, skill_id in enumerate(node.allowed_skills):
             loaded_skill = self._skill_registry.get(skill_id)
@@ -343,7 +343,7 @@ class NodeRunner:
         artifacts: list[ArtifactRecord],
         duration_ms: float,
     ) -> Observation:
-        produced_types = {artifact.artifact_type for artifact in artifacts}
+        produced_types = {artifact.type for artifact in artifacts}
         missing_outputs = [artifact_type for artifact_type in node.expected_outputs if artifact_type not in produced_types]
         if output.success and not missing_outputs:
             status = NodeStatus.success

@@ -25,5 +25,5 @@ def replan_from_observation(observation: Observation | None) -> bool:
 
 def decide_termination(artifact_summaries: list[dict[str, str]]) -> bool:
     final_artifact_types = {"ResearchReport", "ReviewVerdict"}
-    return any(artifact.get("artifact_type") in final_artifact_types for artifact in artifact_summaries)
+    return any(artifact.get("type") in final_artifact_types for artifact in artifact_summaries)
 

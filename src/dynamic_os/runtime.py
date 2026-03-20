@@ -19,8 +19,11 @@ from src.dynamic_os.roles.registry import RoleRegistry
 from src.dynamic_os.skills.registry import SkillRegistry
 from src.dynamic_os.storage.memory import InMemoryArtifactStore, InMemoryObservationStore, InMemoryPlanStore
 from src.dynamic_os.tools.backends import ConfiguredLLMClient
-from src.dynamic_os.tools.discovery import StartedMcpRuntime, start_mcp_runtime
+from src.dynamic_os.tools.mcp_session import StartedMcpRuntime, start_mcp_runtime
 from src.dynamic_os.tools.gateway import ToolGateway
+# TODO (A6 — Phase 6 cutover): Remove the two legacy imports below once the Phase 6
+# API and frontend cutover is complete. Replace _read_env_file and CONFIG_PATH with
+# native dynamic_os configuration loading that does not depend on src.server.*.
 from src.server.routes.config import _read_env_file
 from src.server.settings import CONFIG_PATH
 
@@ -53,14 +56,14 @@ def _report_text(
     observations: list[Observation],
     status: str,
 ) -> str:
-    report = next((item for item in reversed(artifacts) if item.artifact_type == "ResearchReport"), None)
-    review = next((item for item in reversed(artifacts) if item.artifact_type == "ReviewVerdict"), None)
+    report = next((item for item in reversed(artifacts) if item.type == "ResearchReport"), None)
+    review = next((item for item in reversed(artifacts) if item.type == "ReviewVerdict"), None)
     sections: list[str] = []
     if report is not None:
-        sections.append(str(report.payload.get("report") or "").strip())
+        sections.append(str(report.metadata.get("report") or "").strip())
     if review is not None:
-        review_text = str(review.payload.get("review") or "").strip()
-        verdict = str(review.payload.get("verdict") or "").strip()
+        review_text = str(review.metadata.get("review") or "").strip()
+        verdict = str(review.metadata.get("verdict") or "").strip()
         if review_text or verdict:
             sections.append(f"Review Verdict: {verdict or 'n/a'}\n\n{review_text}".strip())
     if sections:
@@ -72,7 +75,7 @@ def _report_text(
         lines.append("")
         lines.append("## Produced Artifacts")
         for artifact in artifacts:
-            lines.append(f"- {artifact.artifact_type}: {artifact.artifact_id}")
+            lines.append(f"- {artifact.type}: {artifact.artifact_id}")
     else:
         lines.append("This run did not produce any artifacts.")
 
@@ -317,7 +320,7 @@ class DynamicResearchRuntime:
         artifact_summary = [
             {
                 "artifact_id": artifact.artifact_id,
-                "artifact_type": artifact.artifact_type,
+                "type": artifact.type,
                 "producer_role": artifact.producer_role.value,
                 "producer_skill": artifact.producer_skill,
             }

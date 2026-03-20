@@ -8,7 +8,7 @@ from src.dynamic_os.contracts.skill_io import SkillContext, SkillOutput
 
 def _find_artifact(ctx: SkillContext, artifact_type: str) -> ArtifactRecord | None:
     for artifact in ctx.input_artifacts:
-        if artifact.artifact_type == artifact_type:
+        if artifact.type == artifact_type:
             return artifact
     return None
 
@@ -18,7 +18,7 @@ async def run(ctx: SkillContext) -> SkillOutput:
     if experiment_results is None:
         return SkillOutput(success=False, error="analyze_metrics requires an ExperimentResults artifact")
 
-    payload = dict(experiment_results.payload)
+    payload = dict(experiment_results.metadata)
     metric_stats, runs = _metric_stats(payload)
     analysis_text = await ctx.tools.llm_chat(
         [

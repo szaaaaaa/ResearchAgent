@@ -8,7 +8,7 @@ from src.dynamic_os.contracts.skill_io import SkillContext, SkillOutput
 
 def _find_artifact(ctx: SkillContext, artifact_type: str) -> ArtifactRecord | None:
     for artifact in ctx.input_artifacts:
-        if artifact.artifact_type == artifact_type:
+        if artifact.type == artifact_type:
             return artifact
     return None
 
@@ -22,7 +22,7 @@ async def run(ctx: SkillContext) -> SkillOutput:
     if source_set is None:
         return SkillOutput(success=False, error="extract_notes requires a SourceSet artifact")
 
-    payload = dict(source_set.payload)
+    payload = dict(source_set.metadata)
     sources = [dict(item) for item in payload.get("sources", [])]
     payload_documents = [dict(item) for item in payload.get("documents", [])]
     indexed_documents = {

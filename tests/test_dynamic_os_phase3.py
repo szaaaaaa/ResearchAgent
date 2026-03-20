@@ -273,10 +273,10 @@ def _phase5_artifact(
 ) -> ArtifactRecord:
     return ArtifactRecord(
         artifact_id=artifact_id,
-        artifact_type=artifact_type,
+        type=artifact_type,
         producer_role=role,
         producer_skill=skill,
-        payload=payload or {},
+        metadata=payload or {},
     )
 
 
@@ -900,7 +900,7 @@ def test_role_routing_policy_detects_writer_for_chinese_closed_loop_request_afte
         artifacts=[
             ArtifactRecord(
                 artifact_id="evidence_1",
-                artifact_type="EvidenceMap",
+                type="EvidenceMap",
                 producer_role=RoleId.researcher,
                 producer_skill="build_evidence_map",
             )
@@ -950,19 +950,19 @@ def test_planner_retries_when_chinese_closed_loop_request_skips_writer_after_evi
         artifact_records=[
             ArtifactRecord(
                 artifact_id="plan_1_search_plan",
-                artifact_type="SearchPlan",
+                type="SearchPlan",
                 producer_role=RoleId.conductor,
                 producer_skill="plan_research",
             ),
             ArtifactRecord(
                 artifact_id="evidence_1",
-                artifact_type="EvidenceMap",
+                type="EvidenceMap",
                 producer_role=RoleId.researcher,
                 producer_skill="build_evidence_map",
             ),
             ArtifactRecord(
                 artifact_id="gap_1",
-                artifact_type="GapMap",
+                type="GapMap",
                 producer_role=RoleId.researcher,
                 producer_skill="build_evidence_map",
             ),
@@ -1383,8 +1383,8 @@ def test_planner_rejects_allowed_skills_with_incompatible_inputs() -> None:
 def test_planner_meta_skills_cover_review_and_termination() -> None:
     assert assess_review_need() is False
     assert assess_review_need(critical_deliverable=True) is True
-    assert decide_termination([{"artifact_type": "ResearchReport"}]) is True
-    assert decide_termination([{"artifact_type": "SourceSet"}]) is False
+    assert decide_termination([{"type": "ResearchReport"}]) is True
+    assert decide_termination([{"type": "SourceSet"}]) is False
 
 
 class SequencePlanner:
@@ -1416,7 +1416,7 @@ def test_executor_runs_local_loop_and_emits_events() -> None:
             output_artifacts=[
                 ArtifactRecord(
                     artifact_id="ss_1",
-                    artifact_type="SourceSet",
+                    type="SourceSet",
                     producer_role=RoleId.researcher,
                     producer_skill="search_papers",
                 )
@@ -1599,10 +1599,10 @@ def test_executor_selects_matching_skill_from_allowed_skills() -> None:
     artifact_store.save(
         ArtifactRecord(
             artifact_id="ss_1",
-            artifact_type="SourceSet",
+            type="SourceSet",
             producer_role=RoleId.researcher,
             producer_skill="search_papers",
-            payload={
+            metadata={
                 "sources": [
                     {
                         "paper_id": "paper_a",
@@ -1638,7 +1638,7 @@ def test_executor_selects_matching_skill_from_allowed_skills() -> None:
 
     assert result.skill_id == "extract_notes"
     assert result.observation.status == NodeStatus.success
-    assert [artifact.artifact_type for artifact in result.artifacts] == ["PaperNotes"]
+    assert [artifact.type for artifact in result.artifacts] == ["PaperNotes"]
 
 
 def test_executor_rejects_planner_run_id_mismatch() -> None:
@@ -1701,10 +1701,10 @@ def test_search_papers_produces_empty_sourceset_with_warnings() -> None:
         input_artifacts=[
             ArtifactRecord(
                 artifact_id="node_plan_1_search_plan",
-                artifact_type="SearchPlan",
+                type="SearchPlan",
                 producer_role=RoleId.conductor,
                 producer_skill="plan_research",
-                payload={"search_queries": ["retrieval planning"]},
+                metadata={"search_queries": ["retrieval planning"]},
             )
         ],
         tools=FakeTools(),
@@ -1714,8 +1714,8 @@ def test_search_papers_produces_empty_sourceset_with_warnings() -> None:
 
     assert output.success is True
     assert output.output_artifacts[0].artifact_id == "node_search_1_source_set"
-    assert output.output_artifacts[0].payload["result_count"] == 0
-    assert output.output_artifacts[0].payload["warnings"] == [
+    assert output.output_artifacts[0].metadata["result_count"] == 0
+    assert output.output_artifacts[0].metadata["warnings"] == [
         "arxiv: feedparser is required for arXiv fetching"
     ]
 
@@ -1745,10 +1745,10 @@ def test_search_papers_merges_queries_and_uses_route_sources() -> None:
         input_artifacts=[
             ArtifactRecord(
                 artifact_id="node_plan_multi_search_plan",
-                artifact_type="SearchPlan",
+                type="SearchPlan",
                 producer_role=RoleId.conductor,
                 producer_skill="plan_research",
-                payload={
+                metadata={
                     "search_queries": ["q1", "q2"],
                     "query_routes": {
                         "q1": {"use_academic": True, "use_web": False},
@@ -1764,8 +1764,8 @@ def test_search_papers_merges_queries_and_uses_route_sources() -> None:
 
     assert output.success is True
     assert calls == [("q1", "academic", 5), ("q2", "web", 5)]
-    assert output.output_artifacts[0].payload["result_count"] == 2
-    assert output.output_artifacts[0].payload["queries"] == ["q1", "q2"]
+    assert output.output_artifacts[0].metadata["result_count"] == 2
+    assert output.output_artifacts[0].metadata["queries"] == ["q1", "q2"]
 
 
 def test_plan_research_uses_structured_keyword_queries() -> None:
@@ -1818,9 +1818,9 @@ def test_plan_research_uses_structured_keyword_queries() -> None:
     output = asyncio.run(loaded.runner(ctx))
 
     assert output.success is True
-    search_plan = next(item for item in output.output_artifacts if item.artifact_type == "SearchPlan")
-    assert search_plan.payload["topic"] == "dynamic research agent systems"
-    assert search_plan.payload["search_queries"] == [
+    search_plan = next(item for item in output.output_artifacts if item.type == "SearchPlan")
+    assert search_plan.metadata["topic"] == "dynamic research agent systems"
+    assert search_plan.metadata["search_queries"] == [
         "dynamic research agent systems",
         "dynamic research agent systems architecture",
         "dynamic research agent systems evaluation",
@@ -1858,8 +1858,8 @@ def test_plan_research_fallback_does_not_reuse_instruction_sentence_as_query() -
     output = asyncio.run(loaded.runner(ctx))
 
     assert output.success is True
-    search_plan = next(item for item in output.output_artifacts if item.artifact_type == "SearchPlan")
-    queries = list(search_plan.payload["search_queries"])
+    search_plan = next(item for item in output.output_artifacts if item.type == "SearchPlan")
+    queries = list(search_plan.metadata["search_queries"])
     assert goal not in queries
     assert all("最小研究闭环" not in query for query in queries)
     assert any("动态研究智能体系统" in query for query in queries)
@@ -1904,8 +1904,8 @@ def test_plan_research_reanchors_generic_queries_to_topic() -> None:
     output = asyncio.run(loaded.runner(ctx))
 
     assert output.success is True
-    search_plan = next(item for item in output.output_artifacts if item.artifact_type == "SearchPlan")
-    assert search_plan.payload["search_queries"] == [
+    search_plan = next(item for item in output.output_artifacts if item.type == "SearchPlan")
+    assert search_plan.metadata["search_queries"] == [
         "动态研究智能体系统 方法与证据是什么",
         "动态研究智能体系统 综述",
         "动态研究智能体系统 方法",
@@ -1952,11 +1952,11 @@ def test_plan_research_rejects_generic_topic_and_keeps_subject() -> None:
     output = asyncio.run(loaded.runner(ctx))
 
     assert output.success is True
-    topic_brief = next(item for item in output.output_artifacts if item.artifact_type == "TopicBrief")
-    search_plan = next(item for item in output.output_artifacts if item.artifact_type == "SearchPlan")
-    assert topic_brief.payload["topic"] == "动态研究智能体系统"
-    assert search_plan.payload["topic"] == "动态研究智能体系统"
-    assert search_plan.payload["search_queries"][0] == "动态研究智能体系统 方法与证据是什么"
+    topic_brief = next(item for item in output.output_artifacts if item.type == "TopicBrief")
+    search_plan = next(item for item in output.output_artifacts if item.type == "SearchPlan")
+    assert topic_brief.metadata["topic"] == "动态研究智能体系统"
+    assert search_plan.metadata["topic"] == "动态研究智能体系统"
+    assert search_plan.metadata["search_queries"][0] == "动态研究智能体系统 方法与证据是什么"
 
 
 def test_build_evidence_map_derives_grounded_gaps() -> None:
@@ -1985,17 +1985,17 @@ def test_build_evidence_map_derives_grounded_gaps() -> None:
         input_artifacts=[
             ArtifactRecord(
                 artifact_id="source_set_empty",
-                artifact_type="SourceSet",
+                type="SourceSet",
                 producer_role=RoleId.researcher,
                 producer_skill="search_papers",
-                payload={"result_count": 0, "sources": [], "warnings": ["semantic_scholar timeout"]},
+                metadata={"result_count": 0, "sources": [], "warnings": ["semantic_scholar timeout"]},
             )
         ],
         tools=FakeTools(),
     )
 
     output = asyncio.run(loaded.runner(ctx))
-    gap_payload = next(item.payload for item in output.output_artifacts if item.artifact_type == "GapMap")
+    gap_payload = next(item.metadata for item in output.output_artifacts if item.type == "GapMap")
 
     assert output.success is True
     assert gap_payload["gap_count"] >= 2
@@ -2029,17 +2029,17 @@ def test_review_artifact_verdict_uses_artifact_checks() -> None:
         input_artifacts=[
             ArtifactRecord(
                 artifact_id="report_missing_text",
-                artifact_type="ResearchReport",
+                type="ResearchReport",
                 producer_role=RoleId.writer,
                 producer_skill="draft_report",
-                payload={"artifact_count": 1},
+                metadata={"artifact_count": 1},
             )
         ],
         tools=FakeTools(),
     )
 
     output = asyncio.run(loaded.runner(ctx))
-    payload = output.output_artifacts[0].payload
+    payload = output.output_artifacts[0].metadata
 
     assert output.success is True
     assert payload["verdict"] == "needs_revision"
@@ -2072,10 +2072,10 @@ def test_analyze_metrics_computes_metric_stats() -> None:
         input_artifacts=[
             ArtifactRecord(
                 artifact_id="experiment_results_aggregate",
-                artifact_type="ExperimentResults",
+                type="ExperimentResults",
                 producer_role=RoleId.experimenter,
                 producer_skill="run_experiment",
-                payload={
+                metadata={
                     "status": "completed",
                     "runs": [
                         {"run_id": "r1", "metrics": [{"name": "accuracy", "value": 0.8}]},
@@ -2088,7 +2088,7 @@ def test_analyze_metrics_computes_metric_stats() -> None:
     )
 
     output = asyncio.run(loaded.runner(ctx))
-    perf_payload = next(item.payload for item in output.output_artifacts if item.artifact_type == "PerformanceMetrics")
+    perf_payload = next(item.metadata for item in output.output_artifacts if item.type == "PerformanceMetrics")
 
     assert output.success is True
     assert perf_payload["run_count"] == 2
@@ -2102,17 +2102,17 @@ def test_runtime_report_text_summarizes_partial_artifacts_when_report_is_missing
         artifacts=[
             ArtifactRecord(
                 artifact_id="node_1_topic_brief",
-                artifact_type="TopicBrief",
+                type="TopicBrief",
                 producer_role=RoleId.conductor,
                 producer_skill="plan_research",
-                payload={"brief": "brief"},
+                metadata={"brief": "brief"},
             ),
             ArtifactRecord(
                 artifact_id="node_5_evidence_map",
-                artifact_type="EvidenceMap",
+                type="EvidenceMap",
                 producer_role=RoleId.researcher,
                 producer_skill="build_evidence_map",
-                payload={"summary": "summary"},
+                metadata={"summary": "summary"},
             ),
         ],
         observations=[
@@ -2169,7 +2169,7 @@ def test_phase5_builtin_skills_produce_expected_outputs(
 
     assert all(tool_id.startswith("mcp.") for tool_id in loaded.spec.allowed_tools)
     assert output.success is True
-    assert {artifact.artifact_type for artifact in output.output_artifacts} == expected_types
+    assert {artifact.type for artifact in output.output_artifacts} == expected_types
 
 
 def test_phase5_run_experiment_returns_failure_on_executor_error() -> None:
@@ -2223,8 +2223,8 @@ def test_phase5_design_experiment_emits_llm_generated_code() -> None:
 
     assert output.success is True
     artifact = output.output_artifacts[0]
-    assert artifact.payload["plan"].startswith("Evaluate retrieval planning")
-    assert artifact.payload["code"] == "metrics = {'accuracy': 0.93, 'latency_ms': 115}\nprint(metrics)"
+    assert artifact.metadata["plan"].startswith("Evaluate retrieval planning")
+    assert artifact.metadata["code"] == "metrics = {'accuracy': 0.93, 'latency_ms': 115}\nprint(metrics)"
 
 
 def test_phase5_run_experiment_requires_executable_code() -> None:
@@ -2273,9 +2273,9 @@ def test_phase5_fetch_fulltext_and_extract_notes_use_retrieved_documents() -> No
 
     assert fetch_output.success is True
     fetched_source_set = fetch_output.output_artifacts[0]
-    fetched_source = fetched_source_set.payload["sources"][0]
+    fetched_source = fetched_source_set.metadata["sources"][0]
     assert fetched_source["content"].startswith("Full text for Paper A")
-    assert fetched_source_set.payload["fetched_count"] == 1
+    assert fetched_source_set.metadata["fetched_count"] == 1
 
     note_ctx = SkillContext(
         skill_id="extract_notes",
@@ -2290,7 +2290,7 @@ def test_phase5_fetch_fulltext_and_extract_notes_use_retrieved_documents() -> No
     note_output = asyncio.run(note_skill.runner(note_ctx))
 
     assert note_output.success is True
-    note_payload = note_output.output_artifacts[0].payload
+    note_payload = note_output.output_artifacts[0].metadata
     assert note_payload["notes"][0]["summary"].startswith("Full text for Paper A")
 
 
@@ -2324,10 +2324,10 @@ def test_extract_notes_continues_when_index_backend_is_unavailable() -> None:
         input_artifacts=[
             ArtifactRecord(
                 artifact_id="source_set_indexless",
-                artifact_type="SourceSet",
+                type="SourceSet",
                 producer_role=RoleId.researcher,
                 producer_skill="fetch_fulltext",
-                payload={
+                metadata={
                     "sources": [
                         {
                             "paper_id": "paper_a",
@@ -2348,7 +2348,7 @@ def test_extract_notes_continues_when_index_backend_is_unavailable() -> None:
     output = asyncio.run(loaded.runner(ctx))
 
     assert output.success is True
-    payload = output.output_artifacts[0].payload
+    payload = output.output_artifacts[0].metadata
     assert payload["notes"][0]["summary"].startswith("Full text for Paper A")
     assert "chromadb" in payload["warnings"][0]
     assert "chromadb" in output.metadata["warnings"][0]
@@ -2522,7 +2522,7 @@ def test_phase5_end_to_end_research_loop_uses_builtin_skills() -> None:
     assert result.termination_reason == "final_artifact_produced"
     assert "artifact:ResearchReport:node_report_1_research_report" in result.final_artifacts
     assert "artifact:ReviewVerdict:node_review_1_review_verdict" in result.final_artifacts
-    assert {record.artifact_type for record in artifact_store.list_all()} == {
+    assert {record.type for record in artifact_store.list_all()} == {
         "TopicBrief",
         "SearchPlan",
         "SourceSet",
@@ -2548,10 +2548,10 @@ def test_executor_short_circuits_when_final_artifact_is_produced_without_review_
             output_artifacts=[
                 ArtifactRecord(
                     artifact_id="report_budget_1",
-                    artifact_type="ResearchReport",
+                    type="ResearchReport",
                     producer_role=RoleId.writer,
                     producer_skill="draft_report",
-                    payload={"report": "Final report"},
+                    metadata={"report": "Final report"},
                 )
             ],
         )
@@ -2707,7 +2707,7 @@ def test_phase6_api_run_streams_dynamic_runtime_contract(monkeypatch: pytest.Mon
             artifacts=[
                 {
                     "artifact_id": "review_1",
-                    "artifact_type": "ReviewVerdict",
+                    "type": "ReviewVerdict",
                     "producer_role": "reviewer",
                     "producer_skill": "review_artifact",
                 }

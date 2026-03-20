@@ -15,6 +15,10 @@ from typing import Any, Callable
 
 import websocket
 
+# TODO (A7 — Phase 7 legacy removal): The src.common.* imports below are legacy
+# leaf-level reuse accepted per the migration plan (section 3.1). They must be
+# migrated or removed when Phase 7 (Legacy Removal) begins. Replace with
+# self-contained dynamic_os implementations or vendored equivalents.
 from src.common.openai_codex import (
     DEFAULT_OPENAI_CODEX_TRANSPORT,
     OPENAI_CODEX_RESPONSES_URL,

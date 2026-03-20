@@ -48,7 +48,7 @@ def parse_artifact_ref(reference: str) -> tuple[str, str]:
 
 
 def artifact_ref_for_record(record: ArtifactRecord) -> str:
-    return artifact_ref(record.artifact_type, record.artifact_id)
+    return artifact_ref(record.type, record.artifact_id)
 
 
 def source_input_refs(records: Iterable[ArtifactRecord]) -> list[str]:
@@ -75,9 +75,9 @@ def make_artifact(
 ) -> ArtifactRecord:
     return ArtifactRecord(
         artifact_id=artifact_id_for(node_id=node_id, artifact_type=artifact_type),
-        artifact_type=artifact_type,
+        type=artifact_type,
         producer_role=producer_role,
         producer_skill=producer_skill,
-        payload=payload,
+        metadata=payload,
         source_inputs=list(source_inputs or []),
     )
