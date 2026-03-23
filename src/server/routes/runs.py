@@ -499,12 +499,12 @@ def get_knowledge_graph_status():
     sqlite_path = str(kg_cfg.get("sqlite_path", "")).strip()
     if not sqlite_path:
         sqlite_path = str(ROOT / "data" / "knowledge_graph.db")
-    resolved = resolve_path(sqlite_path, ROOT)
+    resolved = resolve_path(ROOT, sqlite_path)
     if not Path(resolved).exists():
         return {"enabled": True, "persistence_mode": "sqlite", "node_count": 0, "edge_count": 0, "node_types": {}, "runs": []}
     from src.dynamic_os.storage.sqlite_store import init_knowledge_db
     from src.dynamic_os.storage.knowledge_graph import KnowledgeGraph
-    conn = init_knowledge_db(resolved)
+    conn = init_knowledge_db(str(resolved))
     kg = KnowledgeGraph(conn, run_id="__status_query__")
     summary = kg.summary_for_planner()
     runs_rows = conn.execute("SELECT id, topic, created_at, status FROM runs ORDER BY created_at DESC").fetchall()
@@ -532,12 +532,12 @@ def list_knowledge_graph_nodes(node_type: str | None = None, run_id: str | None 
     sqlite_path = str(kg_cfg.get("sqlite_path", "")).strip()
     if not sqlite_path:
         sqlite_path = str(ROOT / "data" / "knowledge_graph.db")
-    resolved = resolve_path(sqlite_path, ROOT)
+    resolved = resolve_path(ROOT, sqlite_path)
     if not Path(resolved).exists():
         return []
     from src.dynamic_os.storage.sqlite_store import init_knowledge_db
     from src.dynamic_os.storage.knowledge_graph import KnowledgeGraph
-    conn = init_knowledge_db(resolved)
+    conn = init_knowledge_db(str(resolved))
     kg = KnowledgeGraph(conn, run_id="__query__")
     if node_type:
         results = kg.search_by_type(node_type)

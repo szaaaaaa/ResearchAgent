@@ -18,8 +18,6 @@ from src.dynamic_os.policy.engine import PolicyEngine
 from src.dynamic_os.roles.registry import RoleRegistry
 from src.dynamic_os.skills.registry import SkillRegistry
 from src.dynamic_os.storage.memory import InMemoryArtifactStore, InMemoryObservationStore, InMemoryPlanStore
-from src.dynamic_os.storage.sqlite_store import SqliteArtifactStore, SqliteObservationStore, SqlitePlanStore, init_knowledge_db
-from src.dynamic_os.storage.knowledge_graph import KnowledgeGraph
 from src.dynamic_os.tools.backends import ConfiguredLLMClient
 from src.dynamic_os.tools.discovery import StartedMcpRuntime, start_mcp_runtime
 from src.dynamic_os.tools.gateway import ToolGateway
@@ -272,6 +270,9 @@ class DynamicResearchRuntime:
         persistence_mode = str((config.get("knowledge_graph") or {}).get("persistence_mode", "memory")).strip()
         knowledge_graph = None
         if persistence_mode == "sqlite":
+            from src.dynamic_os.storage.sqlite_store import SqliteArtifactStore, SqliteObservationStore, SqlitePlanStore, init_knowledge_db
+            from src.dynamic_os.storage.knowledge_graph import KnowledgeGraph
+
             kg_sqlite_path = str((config.get("knowledge_graph") or {}).get("sqlite_path", "")).strip()
             if not kg_sqlite_path:
                 kg_sqlite_path = str(self._root / "data" / "knowledge_graph.db")
