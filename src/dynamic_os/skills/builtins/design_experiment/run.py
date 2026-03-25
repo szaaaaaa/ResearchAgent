@@ -167,7 +167,8 @@ async def run(ctx: SkillContext) -> SkillOutput:
         if not plan_text:
             return SkillOutput(success=False, error="design_experiment did not provide a plan")
 
-        write_mutable_files(workspace, file_changes)
+        safe_changes = {k: v for k, v in file_changes.items() if k in ws_config.mutable_files}
+        write_mutable_files(workspace, safe_changes)
         snapshot = snapshot_mutable(workspace, ws_config.mutable_files)
 
         artifact = make_artifact(
