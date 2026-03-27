@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from src.dynamic_os.contracts.route_plan import RoleId
 
 
-def _now_iso() -> str:
+def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -26,5 +26,5 @@ class ArtifactRecord(BaseModel):
     )
     payload: dict[str, Any] = Field(default_factory=dict)
     source_inputs: list[str] = Field(default_factory=list)
-    created_at: str = Field(default_factory=_now_iso)
+    created_at: str = Field(default_factory=now_iso)
 

@@ -722,9 +722,9 @@ class ConfiguredToolBackend:
             return [
                 {
                     "name": "papers",
-                    "description": "Search academic and web sources for relevant records.",
+                    "description": "Search web sources (Google CSE, Bing, GitHub, DuckDuckGo).",
                     "annotations": {"capability": "search"},
-                    "metadata": {},
+                    "metadata": {"search_type": "web"},
                 }
             ]
         if normalized == "retrieval":
@@ -861,191 +861,105 @@ class ConfiguredToolBackend:
         return None
 
     def search_sources(self, query: str, max_results: int, *, source: str = "auto") -> dict[str, Any]:
+        """Web-only search. Academic search is handled by paper_search MCP."""
         if not query.strip():
             return {"results": [], "warnings": []}
-        from src.ingest.fetchers import fetch_arxiv
         from src.ingest.web_fetcher import (
             search_bing,
             search_duckduckgo,
             search_github,
             search_google_cse,
-            search_openalex,
-            search_semantic_scholar,
         )
+
+        normalized_source = str(source or "auto").strip().lower()
+        if normalized_source in {"academic", "paper", "papers"}:
+            return {"results": [], "warnings": []}
 
         limit = max(1, min(max_results, fetch_max_results(self._config)))
         results: list[dict[str, Any]] = []
         source_errors: list[str] = []
-        normalized_source = str(source or "auto").strip().lower()
-        academic_order = list(get_by_dotted(self._config, "providers.search.academic_order") or ["arxiv", "semantic_scholar"])
         web_order = list(get_by_dotted(self._config, "providers.search.web_order") or ["google_cse", "bing"])
-        query_all_academic = as_bool(get_by_dotted(self._config, "providers.search.query_all_academic"), False)
         query_all_web = as_bool(get_by_dotted(self._config, "providers.search.query_all_web"), False)
-        run_academic = True
-        run_web = as_bool(get_by_dotted(self._config, "sources.web.enabled"), False)
         enable_duckduckgo_fallback = normalized_source in {"", "auto", "web"}
 
-        if normalized_source in {"academic", "paper", "papers"}:
-            run_web = False
-        elif normalized_source == "web":
-            run_academic = False
-            run_web = True
-        elif normalized_source in {"arxiv", "semantic_scholar", "openalex"}:
-            academic_order = [normalized_source]
-            run_web = False
-        elif normalized_source in {"google_cse", "bing", "github", "duckduckgo"}:
+        if normalized_source in {"google_cse", "bing", "github", "duckduckgo"}:
             web_order = [normalized_source]
-            run_academic = False
-            run_web = True
 
-        for source_name in academic_order if run_academic else []:
-            mapped: list[dict[str, Any]] = []
+        web_handlers: dict[str, Callable[[], list[dict[str, Any]]]] = {
+            "google_cse": lambda: [
+                {
+                    "paper_id": item.uid,
+                    "title": item.title,
+                    "abstract": item.snippet,
+                    "content": item.body or item.snippet,
+                    "url": item.url,
+                    "source": item.source,
+                }
+                for item in search_google_cse(query, max_results=limit)
+            ],
+            "bing": lambda: [
+                {
+                    "paper_id": item.uid,
+                    "title": item.title,
+                    "abstract": item.snippet,
+                    "content": item.body or item.snippet,
+                    "url": item.url,
+                    "source": item.source,
+                }
+                for item in search_bing(query, max_results=limit)
+            ],
+            "github": lambda: [
+                {
+                    "paper_id": item.uid,
+                    "title": item.title,
+                    "abstract": item.snippet,
+                    "content": item.body or item.snippet,
+                    "url": item.url,
+                    "source": item.source,
+                }
+                for item in search_github(query, max_results=limit)
+            ],
+            "duckduckgo": lambda: [
+                {
+                    "paper_id": item.uid,
+                    "title": item.title,
+                    "abstract": item.snippet,
+                    "content": item.body or item.snippet,
+                    "url": item.url,
+                    "source": item.source,
+                }
+                for item in search_duckduckgo(query, max_results=limit)
+            ],
+        }
+        for source_name in web_order:
+            if source_name == "google_cse" and not as_bool(get_by_dotted(self._config, "sources.google_cse.enabled"), False):
+                continue
+            if source_name == "bing" and not as_bool(get_by_dotted(self._config, "sources.bing.enabled"), False):
+                continue
+            if source_name == "github" and not as_bool(get_by_dotted(self._config, "sources.github.enabled"), False):
+                continue
+            handler = web_handlers.get(source_name)
+            if handler is None:
+                continue
             try:
-                if source_name == "arxiv" and as_bool(get_by_dotted(self._config, "sources.arxiv.enabled"), True):
-                    mapped = [
-                        {
-                            "paper_id": record.uid,
-                            "title": record.title,
-                            "abstract": record.abstract or "",
-                            "content": record.abstract or "",
-                            "url": record.pdf_url or "",
-                            "source": record.source,
-                            "authors": list(record.authors),
-                            "year": record.year,
-                            "pdf_url": record.pdf_url,
-                        }
-                        for record in fetch_arxiv(
-                            query=query,
-                            max_results=min(limit, int(get_by_dotted(self._config, "sources.arxiv.max_results_per_query") or limit)),
-                            download=False,
-                            download_source=False,
-                            papers_dir=str(papers_dir(self._root, self._config)),
-                            polite_delay_sec=fetch_delay(self._config),
-                        )
-                    ]
-                if source_name == "semantic_scholar" and as_bool(get_by_dotted(self._config, "sources.semantic_scholar.enabled"), True):
-                    mapped = [
-                        {
-                            "paper_id": item.uid,
-                            "title": item.title,
-                            "abstract": item.snippet,
-                            "content": item.body or item.snippet,
-                            "url": item.url,
-                            "source": item.source,
-                            "authors": list(item.authors),
-                            "year": item.year,
-                            "pdf_url": item.pdf_url,
-                        }
-                        for item in search_semantic_scholar(
-                            query,
-                            max_results=min(limit, int(get_by_dotted(self._config, "sources.semantic_scholar.max_results_per_query") or limit)),
-                            min_interval_sec=float(get_by_dotted(self._config, "sources.semantic_scholar.polite_delay_sec") or fetch_delay(self._config)),
-                            max_retries=int(get_by_dotted(self._config, "sources.semantic_scholar.max_retries") or 3),
-                            backoff_sec=float(get_by_dotted(self._config, "sources.semantic_scholar.retry_backoff_sec") or 2.0),
-                        )
-                    ]
-                if source_name == "openalex" and as_bool(get_by_dotted(self._config, "sources.openalex.enabled"), False):
-                    mapped = [
-                        {
-                            "paper_id": item.uid,
-                            "title": item.title,
-                            "abstract": item.snippet,
-                            "content": item.body or item.snippet,
-                            "url": item.url,
-                            "source": item.source,
-                            "authors": list(item.authors),
-                            "year": item.year,
-                            "pdf_url": item.pdf_url,
-                        }
-                        for item in search_openalex(
-                            query,
-                            max_results=min(limit, int(get_by_dotted(self._config, "sources.openalex.max_results_per_query") or limit)),
-                        )
-                    ]
+                mapped = handler()
             except Exception as exc:
                 source_errors.append(f"{source_name}: {exc}")
                 mapped = []
             if mapped:
                 results.extend(mapped)
-                if not query_all_academic:
+                if not query_all_web:
                     break
-
-        if run_web:
-            web_handlers: dict[str, Callable[[], list[dict[str, Any]]]] = {
-                "google_cse": lambda: [
-                    {
-                        "paper_id": item.uid,
-                        "title": item.title,
-                        "abstract": item.snippet,
-                        "content": item.body or item.snippet,
-                        "url": item.url,
-                        "source": item.source,
-                    }
-                    for item in search_google_cse(query, max_results=limit)
-                ],
-                "bing": lambda: [
-                    {
-                        "paper_id": item.uid,
-                        "title": item.title,
-                        "abstract": item.snippet,
-                        "content": item.body or item.snippet,
-                        "url": item.url,
-                        "source": item.source,
-                    }
-                    for item in search_bing(query, max_results=limit)
-                ],
-                "github": lambda: [
-                    {
-                        "paper_id": item.uid,
-                        "title": item.title,
-                        "abstract": item.snippet,
-                        "content": item.body or item.snippet,
-                        "url": item.url,
-                        "source": item.source,
-                    }
-                    for item in search_github(query, max_results=limit)
-                ],
-                "duckduckgo": lambda: [
-                    {
-                        "paper_id": item.uid,
-                        "title": item.title,
-                        "abstract": item.snippet,
-                        "content": item.body or item.snippet,
-                        "url": item.url,
-                        "source": item.source,
-                    }
-                    for item in search_duckduckgo(query, max_results=limit)
-                ],
-            }
-            for source_name in web_order:
-                if source_name == "google_cse" and not as_bool(get_by_dotted(self._config, "sources.google_cse.enabled"), False):
-                    continue
-                if source_name == "bing" and not as_bool(get_by_dotted(self._config, "sources.bing.enabled"), False):
-                    continue
-                if source_name == "github" and not as_bool(get_by_dotted(self._config, "sources.github.enabled"), False):
-                    continue
-                handler = web_handlers.get(source_name)
-                if handler is None:
-                    continue
-                try:
-                    mapped = handler()
-                except Exception as exc:
-                    source_errors.append(f"{source_name}: {exc}")
-                    mapped = []
-                if mapped:
-                    results.extend(mapped)
-                    if not query_all_web:
-                        break
-            if not results and enable_duckduckgo_fallback:
-                try:
-                    results.extend(web_handlers["duckduckgo"]())
-                except Exception as exc:
-                    source_errors.append(f"duckduckgo: {exc}")
+        if not results and enable_duckduckgo_fallback:
+            try:
+                results.extend(web_handlers["duckduckgo"]())
+            except Exception as exc:
+                source_errors.append(f"duckduckgo: {exc}")
 
         deduped = _dedupe_records(results, key="paper_id")[:limit]
         warnings = [str(item).strip() for item in source_errors if str(item).strip()]
         if not deduped and not warnings:
-            warnings.append("no search sources returned results")
+            warnings.append("no web search sources returned results")
         return {"results": deduped, "warnings": warnings}
 
     def retrieve_documents(self, query: str, top_k: int, filters: Any) -> list[dict[str, Any]]:
@@ -1263,9 +1177,6 @@ class ConfiguredToolBackend:
         return any(
             as_bool(get_by_dotted(self._config, path), default)
             for path, default in (
-                ("sources.arxiv.enabled", True),
-                ("sources.semantic_scholar.enabled", True),
-                ("sources.openalex.enabled", False),
                 ("sources.web.enabled", False),
                 ("sources.google_cse.enabled", False),
                 ("sources.bing.enabled", False),

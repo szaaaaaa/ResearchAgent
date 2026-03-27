@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -33,3 +34,14 @@ class SkillOutput(BaseModel):
     output_artifacts: list[ArtifactRecord] = Field(default_factory=list)
     error: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def find_artifact(ctx: SkillContext, artifact_type: str) -> ArtifactRecord | None:
+    for artifact in ctx.input_artifacts:
+        if artifact.artifact_type == artifact_type:
+            return artifact
+    return None
+
+
+def serialize_payload(artifact: ArtifactRecord) -> str:
+    return json.dumps(artifact.payload, ensure_ascii=False, indent=2, default=str)

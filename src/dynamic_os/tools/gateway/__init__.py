@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Callable
 
+from src.dynamic_os.contracts.artifact import now_iso as _now_iso
 from src.dynamic_os.contracts.events import ToolInvokeEvent
 from src.dynamic_os.contracts.skill_spec import SkillPermissions
 from src.dynamic_os.policy.engine import PolicyEngine, PolicyViolationError
@@ -15,10 +15,6 @@ from src.dynamic_os.tools.gateway.search import SearchGateway
 from src.dynamic_os.tools.registry import ToolCapability, ToolRegistry
 
 EventSink = Callable[[object], None]
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 class ToolGateway:

@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
 from src.common.config_utils import as_bool, get_by_dotted, load_yaml, read_env_file
 from src.dynamic_os.artifact_refs import artifact_ref_for_record
-from src.dynamic_os.contracts.artifact import ArtifactRecord
+from src.dynamic_os.contracts.artifact import ArtifactRecord, now_iso as _now_iso
 from src.dynamic_os.contracts.observation import NodeStatus, Observation
 from src.dynamic_os.contracts.policy import BudgetPolicy, PermissionPolicy
 from src.dynamic_os.executor import Executor, NodeRunner
@@ -28,10 +28,6 @@ _ENV_PATH = _REPO_ROOT / ".env"
 
 
 EventSink = Callable[[dict[str, Any]], None]
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _run_tag() -> str:

@@ -6,13 +6,9 @@ providers:
     gemini_api_key_env: GEMINI_API_KEY
   search:
     backend: default_search
-    academic_order:
-    - arxiv
-    - semantic_scholar
     web_order:
     - google_cse
     - bing
-    query_all_academic: true
     query_all_web: false
     circuit_breaker:
       enabled: true

@@ -8,6 +8,12 @@ from src.dynamic_os.tools.registry import ToolCapability
 
 
 class SearchGateway:
+    """Routes searches: academic → paper_search MCP, web → internal search."""
+
+    # Internal search server handles web only; external MCP handles academic.
+    _WEB_SERVER_ID = "search"
+    _ACADEMIC_SERVER_ID = "paper_search"
+
     def __init__(self, *, mcp: McpGateway, policy: PolicyEngine) -> None:
         self._mcp = mcp
         self._policy = policy
@@ -24,10 +30,18 @@ class SearchGateway:
         if not search_tools:
             return {"results": [], "warnings": ["no search tools registered"]}
 
+        normalized = str(source or "auto").strip().lower()
+        want_academic = normalized in {"", "auto", "academic", "paper", "papers"}
+        want_web = normalized in {"", "auto", "web", "google_cse", "bing", "github", "duckduckgo"}
+
         all_results: list[dict[str, Any]] = []
         all_warnings: list[str] = []
 
         for tool in search_tools:
+            if tool.server_id == self._ACADEMIC_SERVER_ID and not want_academic:
+                continue
+            if tool.server_id == self._WEB_SERVER_ID and not want_web:
+                continue
             try:
                 result = await self._mcp.invoke_tool(
                     tool.tool_id,

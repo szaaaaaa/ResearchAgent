@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from src.dynamic_os.artifact_refs import make_artifact
-from src.dynamic_os.contracts.artifact import ArtifactRecord
+from src.dynamic_os.contracts.artifact import ArtifactRecord, now_iso as _now_iso
 from src.dynamic_os.contracts.events import (
     ArtifactEvent,
     HitlRequestEvent,
@@ -26,12 +26,6 @@ from src.dynamic_os.policy.engine import BudgetExceededError, PolicyEngine
 
 
 EventSink = Callable[[object], None]
-
-
-def _now_iso() -> str:
-    from datetime import datetime, timezone
-
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _artifact_ref(record) -> str:

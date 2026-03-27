@@ -2,15 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
-
-from src.dynamic_os.contracts.artifact import ArtifactRecord
+from src.dynamic_os.contracts.artifact import ArtifactRecord, now_iso as _now_iso
 from src.dynamic_os.contracts.observation import ErrorType, NodeStatus, Observation
 from src.dynamic_os.contracts.route_plan import RoleId, RoutePlan
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def init_knowledge_db(sqlite_path: str) -> sqlite3.Connection:

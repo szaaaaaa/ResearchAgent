@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import re
 import time
 from dataclasses import dataclass
 from typing import Callable
 
 from src.dynamic_os.artifact_refs import artifact_ref_for_record, parse_artifact_ref
-from src.dynamic_os.contracts.artifact import ArtifactRecord
+from src.dynamic_os.contracts.artifact import ArtifactRecord, now_iso as _now_iso
 from src.dynamic_os.contracts.events import (
     ArtifactEvent,
     NodeStatusEvent,
@@ -26,11 +25,6 @@ from src.dynamic_os.tools.gateway import ToolGateway
 
 EventSink = Callable[[object], None]
 
-
-def _now_iso() -> str:
-    from datetime import datetime, timezone
-
-    return datetime.now(timezone.utc).isoformat()
 
 @dataclass(frozen=True)
 class NodeExecutionResult:

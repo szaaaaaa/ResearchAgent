@@ -7,16 +7,11 @@ import re
 from src.dynamic_os.artifact_refs import make_artifact, source_input_refs
 from src.dynamic_os.contracts.artifact import ArtifactRecord
 from src.dynamic_os.contracts.route_plan import RoleId
-from src.dynamic_os.contracts.skill_io import SkillContext, SkillOutput
+from src.dynamic_os.contracts.skill_io import SkillContext, SkillOutput, find_artifact as _find_artifact
 
 METRIC_PATTERN = re.compile(r"^METRIC\s+(\w+)\s*=\s*([\d.eE+-]+)$", re.MULTILINE)
 
 
-def _find_artifact(ctx: SkillContext, artifact_type: str) -> ArtifactRecord | None:
-    for artifact in ctx.input_artifacts:
-        if artifact.artifact_type == artifact_type:
-            return artifact
-    return None
 
 
 def _parse_metrics(stdout: str) -> dict[str, float]:

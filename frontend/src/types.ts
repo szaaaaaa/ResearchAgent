@@ -64,9 +64,7 @@ export interface ProjectConfig {
     };
     search: {
       backend: string;
-      academic_order: string[];
       web_order: string[];
-      query_all_academic: boolean;
       query_all_web: boolean;
       circuit_breaker: {
         enabled: boolean;
