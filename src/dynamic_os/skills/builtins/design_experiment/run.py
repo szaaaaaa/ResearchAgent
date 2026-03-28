@@ -127,7 +127,7 @@ async def run(ctx: SkillContext) -> SkillOutput:
     prior_iteration = _find_artifact(ctx, "ExperimentIteration")
 
     if prior_iteration is None:
-        # --- 首次迭代：从模板初始化工作空间 ---
+        # --- First iteration: initialize workspace from template ---
         ws_raw = experiment_cfg.get("workspace", {})
         ws_config = parse_workspace_config(ws_raw)
 
@@ -183,7 +183,7 @@ async def run(ctx: SkillContext) -> SkillOutput:
         )
         return SkillOutput(success=True, output_artifacts=[artifact])
 
-    # --- 后续迭代：基于反馈修改工作空间 ---
+    # --- Subsequent iteration: modify workspace based on feedback ---
     prior_payload = dict(prior_iteration.payload)
 
     workspace_path = prior_payload.get("workspace_path", "")

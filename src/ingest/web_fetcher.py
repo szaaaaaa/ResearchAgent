@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-"""多源网页抓取器。
+"""Multi-source web fetcher.
 
-支持：
-- Google / Google Scholar（通过 SerpAPI）
+Supports:
+- Google / Google Scholar via SerpAPI
 - Google CSE
-- Bing 网页搜索
+- Bing Web Search
 - DuckDuckGo
 - Semantic Scholar
 - OpenAlex
-- GitHub 搜索 API
+- GitHub Search API
 """
 
 import logging
@@ -55,14 +55,14 @@ _S2_LAST_CALL_TS = 0.0
 
 @dataclass
 class WebResult:
-    """搜索源返回的单条结果。"""
+    """A single result returned by a search source."""
 
     uid: str
     title: str
     url: str
     snippet: str
-    source: str  # 例如 "web", "google", "google_cse", "bing", "semantic_scholar", "openalex", "github"
-    body: str = ""  # 完整提取的文本（由抓取步骤填充）
+    source: str  # e.g. "web", "google", "google_cse", "bing", "semantic_scholar", "openalex", "github"
+    body: str = ""  # full extracted text (filled by scrape step)
     authors: List[str] = field(default_factory=list)
     year: Optional[int] = None
     pdf_url: Optional[str] = None
@@ -88,7 +88,7 @@ def _is_chinese_result(r: WebResult) -> bool:
 
 
 def _url_to_uid(url: str) -> str:
-    """将 URL 转换为文件系统安全的 UID 片段。"""
+    """Convert a URL to a filesystem-safe UID fragment."""
     parsed = urlparse(url)
     host = parsed.netloc.replace("www.", "")
     path = parsed.path.strip("/").replace("/", "_")
@@ -97,7 +97,7 @@ def _url_to_uid(url: str) -> str:
 
 
 def _respect_semantic_scholar_rate_limit(min_interval_sec: float) -> None:
-    """本进程中 Semantic Scholar API 调用的全局限流。"""
+    """Global throttle for Semantic Scholar API calls in this process."""
     global _S2_LAST_CALL_TS
     wait = 0.0
     now = time.monotonic()
@@ -114,7 +114,7 @@ def _respect_semantic_scholar_rate_limit(min_interval_sec: float) -> None:
 
 
 def dedup_results(*result_lists: List[WebResult]) -> List[WebResult]:
-    """合并多个结果列表，按 uid 去重。"""
+    """Merge multiple result lists, deduplicating by uid."""
     seen: dict[str, WebResult] = {}
     for lst in result_lists:
         for r in lst:
@@ -148,7 +148,7 @@ def prioritize_results(
     prefer_english: bool = True,
     max_chinese_ratio: float = 0.25,
 ) -> List[WebResult]:
-    """优先英文/国际来源，其次中文来源。"""
+    """Prefer English/global sources first, then Chinese sources."""
     uniq = dedup_results(results)
     if not prefer_english:
         return uniq[:max_results]
@@ -211,7 +211,7 @@ def search_google(
     hl: str = "en",
     gl: str = "us",
 ) -> List[WebResult]:
-    """当设置了 `SERPAPI_API_KEY` 时通过 SerpAPI 搜索 Google。"""
+    """Search Google via SerpAPI when `SERPAPI_API_KEY` is set."""
     rows = _search_serpapi(query, engine="google", max_results=max_results, hl=hl, gl=gl)
     out: List[WebResult] = []
     for i, row in enumerate(rows):
@@ -233,7 +233,7 @@ def search_google_scholar(
     query: str,
     max_results: int = 10,
 ) -> List[WebResult]:
-    """当设置了 `SERPAPI_API_KEY` 时通过 SerpAPI 搜索 Google Scholar。"""
+    """Search Google Scholar via SerpAPI when `SERPAPI_API_KEY` is set."""
     rows = _search_serpapi(query, engine="google_scholar", max_results=max_results, hl="en", gl="us")
     out: List[WebResult] = []
     for i, row in enumerate(rows):
@@ -266,7 +266,7 @@ def search_google_cse(
     hl: str = "en",
     gl: str = "us",
 ) -> List[WebResult]:
-    """搜索 Google 可编程搜索引擎（Custom Search JSON API）。"""
+    """Search Google Programmable Search Engine (Custom Search JSON API)."""
     api_key = os.getenv("GOOGLE_CSE_API_KEY", "").strip()
     cx = os.getenv("GOOGLE_CSE_CX", "").strip()
     if not api_key or not cx:
@@ -323,7 +323,7 @@ def search_bing(
     *,
     mkt: str = "en-US",
 ) -> List[WebResult]:
-    """搜索 Bing 网页搜索 API。"""
+    """Search Bing Web Search API."""
     api_key = os.getenv("BING_API_KEY", "").strip()
     if not api_key:
         return []
@@ -371,7 +371,7 @@ def search_duckduckgo(
     *,
     region: str = "us-en",
 ) -> List[WebResult]:
-    """通过 DuckDuckGo 搜索网页（无需 API 密钥）。"""
+    """Search the web via DuckDuckGo (no API key needed)."""
     try:
         from duckduckgo_search import DDGS
     except ImportError:
@@ -406,7 +406,7 @@ def search_openalex(
     query: str,
     max_results: int = 10,
 ) -> List[WebResult]:
-    """搜索 OpenAlex 论文 API（免费）。"""
+    """Search OpenAlex works API (free)."""
     results: List[WebResult] = []
     try:
         resp = requests.get(
@@ -521,7 +521,7 @@ def search_semantic_scholar(
     max_retries: int = 4,
     backoff_sec: float = 1.5,
 ) -> List[WebResult]:
-    """搜索 Semantic Scholar 学术论文（免费，无需密钥）。"""
+    """Search Semantic Scholar for academic papers (free, no key)."""
     results: List[WebResult] = []
     params = {
         "query": query,
@@ -625,7 +625,7 @@ def search_github(
     *,
     sort: str = "stars",
 ) -> List[WebResult]:
-    """搜索 GitHub 仓库作为网络/工程证据。"""
+    """Search GitHub repositories as web/engineering evidence."""
     token = os.getenv("GITHUB_TOKEN", "").strip()
     headers = dict(_HEADERS)
     if token:
@@ -684,7 +684,7 @@ def fetch_page_content(
     url: str,
     timeout: int = 20,
 ) -> str:
-    """从网页中提取主要文本内容。"""
+    """Extract main textual content from a web page."""
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=timeout)
         resp.raise_for_status()
@@ -725,7 +725,7 @@ def scrape_results(
     polite_delay_sec: float = 0.5,
     max_chars: int = 30000,
 ) -> List[WebResult]:
-    """为每个有 URL 的 WebResult 抓取完整正文文本。"""
+    """Fetch full body text for each WebResult that has a URL."""
     for r in results:
         if r.body or not r.url:
             continue

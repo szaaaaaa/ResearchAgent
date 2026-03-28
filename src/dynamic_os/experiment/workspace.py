@@ -1,4 +1,4 @@
-"""实验工作区管理 - 初始化、快照、恢复、读写可变文件。"""
+"""Experiment workspace management — init, snapshot, restore, read/write mutable files."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ _BUILTIN_TEMPLATE_DIR: Path = Path(__file__).parent / "templates" / "default"
 
 @dataclass(frozen=True)
 class WorkspaceConfig:
-    """声明实验工作区的结构与约束。"""
+    """Declares the structure and constraints of an experiment workspace."""
 
     template: str = "builtin"
     custom_path: str = ""
@@ -21,11 +21,11 @@ class WorkspaceConfig:
 
 
 def init_workspace(config: WorkspaceConfig, run_dir: str | Path) -> Path:
-    """将工作区模板复制到 *run_dir*/experiment_workspace 并返回其路径。
+    """Copy the workspace template into *run_dir*/experiment_workspace and return its path.
 
-    当 ``template="builtin"`` 时使用内置默认模板。
-    当 ``template="custom"`` 时复制 *config.custom_path* 指定的目录；
-    该目录必须存在且包含 *entry_point* 和 *eval_script*。
+    For ``template="builtin"`` the built-in default template is used.
+    For ``template="custom"`` the directory at *config.custom_path* is copied instead;
+    it must exist and contain both *entry_point* and *eval_script*.
     """
     run_dir = Path(run_dir)
     dest = run_dir / "experiment_workspace"
@@ -63,9 +63,9 @@ def init_workspace(config: WorkspaceConfig, run_dir: str | Path) -> Path:
 def read_mutable_files(
     workspace: Path, mutable_files: list[str]
 ) -> dict[str, str]:
-    """返回 *workspace* 中每个可变文件的 ``{relative_path: content}`` 字典。
+    """Return ``{relative_path: content}`` for each mutable file in *workspace*.
 
-    不存在的文件以空字符串值包含在内。
+    Files that do not exist are included with an empty-string value.
     """
     result: dict[str, str] = {}
     for rel in mutable_files:
@@ -80,9 +80,9 @@ def read_mutable_files(
 def write_mutable_files(
     workspace: Path, changes: dict[str, str]
 ) -> None:
-    """将 *changes* (``{relative_path: content}``) 写入 *workspace*。
+    """Write *changes* (``{relative_path: content}``) into *workspace*.
 
-    父目录不存在时会自动创建。
+    Parent directories are created automatically when they do not exist.
     """
     for rel, content in changes.items():
         fp = workspace / rel
@@ -93,21 +93,21 @@ def write_mutable_files(
 def snapshot_mutable(
     workspace: Path, mutable_files: list[str]
 ) -> dict[str, str]:
-    """捕获所有可变文件的当前状态作为保存点字典。"""
+    """Capture the current state of all mutable files as a save-point dict."""
     return read_mutable_files(workspace, mutable_files)
 
 
 def restore_snapshot(
     workspace: Path, snapshot: dict[str, str]
 ) -> None:
-    """通过写回所有文件来恢复之前捕获的快照。"""
+    """Restore a previously captured snapshot by writing all files back."""
     write_mutable_files(workspace, snapshot)
 
 
 def parse_workspace_config(raw: dict) -> WorkspaceConfig:
-    """从原始字典（如实验计划 YAML）构建 :class:`WorkspaceConfig`。
+    """Build a :class:`WorkspaceConfig` from a raw dict (e.g. from experiment plan YAML).
 
-    缺失的键使用 dataclass 默认值。
+    Missing keys receive their dataclass defaults.
     """
     return WorkspaceConfig(
         template=raw.get("template", "builtin"),

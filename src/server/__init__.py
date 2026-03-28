@@ -1,1 +1,1 @@
-"""FastAPI 路由模块的服务端包。"""
+"""Server package for FastAPI route modules."""

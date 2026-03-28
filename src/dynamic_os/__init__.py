@@ -1,1 +1,1 @@
-"""Dynamic Research OS 运行时包。"""
+"""Dynamic Research OS runtime package."""

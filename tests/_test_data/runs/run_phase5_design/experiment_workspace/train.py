@@ -1,4 +1,4 @@
-"""用于深度学习实验的标准 PyTorch 训练脚本。"""
+"""Standard PyTorch training script for deep learning experiments."""
 
 import os
 import random
@@ -131,7 +131,7 @@ def main() -> None:
             torch.save({"model_state_dict": model.state_dict(), "hparams": hparams, "epoch": epoch},
                        ckpt_dir / "best.pt")
 
-    # 在验证集上进行最终评估以报告指标
+    # Final evaluation on validation set for metric reporting
     final_val_loss, final_val_acc = evaluate(model, val_loader, criterion, device)
     print(f"METRIC train_loss={train_loss:.6f}")
     print(f"METRIC val_loss={final_val_loss:.6f}")

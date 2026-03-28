@@ -37,19 +37,14 @@
   default_allowed_skills:
     - design_experiment
     - run_experiment
-    - optimize_skill
-    - create_skill
   input_artifact_types:
     - SearchPlan
     - EvidenceMap
     - GapMap
     - ExperimentIteration
-    - ReflectionReport
   output_artifact_types:
     - ExperimentPlan
     - ExperimentResults
-    - SkillPatch
-    - SkillCreation
   forbidden:
     - Must not take over the general literature review flow
 
@@ -63,7 +58,6 @@
     - analyze_trends
     - compare_methods
     - generate_figures
-    - reflect_on_failure
   input_artifact_types:
     - SourceSet
     - PaperNotes
@@ -76,7 +70,6 @@
     - TrendAnalysis
     - MethodComparison
     - FigureSet
-    - ReflectionReport
   forbidden:
     - Must not own global workflow decisions
 

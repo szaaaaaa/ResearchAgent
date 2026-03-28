@@ -1,4 +1,4 @@
-# src/ingest/pdf_loader.py — PDF 文本加载
+# src/ingest/pdf_loader.py
 from __future__ import annotations
 
 from dataclasses import dataclass

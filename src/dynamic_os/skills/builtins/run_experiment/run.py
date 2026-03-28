@@ -15,7 +15,7 @@ METRIC_PATTERN = re.compile(r"^METRIC\s+(\w+)\s*=\s*([\d.eE+-]+)$", re.MULTILINE
 
 
 def _parse_metrics(stdout: str) -> dict[str, float]:
-    """从标准输出中提取所有 METRIC name=value 行。"""
+    """Extract all METRIC name=value lines from stdout."""
     metrics: dict[str, float] = {}
     for match in METRIC_PATTERN.finditer(stdout):
         name = match.group(1)
@@ -25,7 +25,7 @@ def _parse_metrics(stdout: str) -> dict[str, float]:
 
 
 def _metric_list(metrics: dict[str, float]) -> list[dict]:
-    """将指标字典转换为制品载荷所需的列表格式。"""
+    """Convert metrics dict to list format for artifact payload."""
     items: list[dict] = []
     for name, value in metrics.items():
         items.append(
@@ -41,7 +41,7 @@ def _metric_list(metrics: dict[str, float]) -> list[dict]:
 
 
 def _build_run_script(workspace_path: str, entry_point: str, eval_script: str) -> str:
-    """构建一个在工作空间中依次运行 entry_point 和 eval_script 的 Python 脚本。"""
+    """Build a Python script that runs entry_point then eval_script in the workspace."""
     return (
         f"import subprocess, sys, os\n"
         f"os.chdir({workspace_path!r})\n"
@@ -58,7 +58,7 @@ def _build_run_script(workspace_path: str, entry_point: str, eval_script: str) -
 
 
 def _format_files(file_contents: dict[str, str]) -> str:
-    """将文件内容格式化以便嵌入 LLM 提示词。"""
+    """Format file contents for inclusion in an LLM prompt."""
     parts: list[str] = []
     for filename, content in file_contents.items():
         parts.append(f"--- {filename} ---\n{content}\n")
@@ -68,7 +68,7 @@ def _format_files(file_contents: dict[str, str]) -> str:
 async def _read_mutable_files(
     ctx: SkillContext, workspace_path: str, mutable_files: list[str],
 ) -> dict[str, str]:
-    """从工作空间读取所有可变文件的当前内容。"""
+    """Read current contents of all mutable files from workspace."""
     contents: dict[str, str] = {}
     for filename in mutable_files:
         filepath = os.path.join(workspace_path, filename)
@@ -82,7 +82,7 @@ async def _read_mutable_files(
 async def _write_fixed_files(
     ctx: SkillContext, workspace_path: str, files: dict[str, str],
 ) -> None:
-    """将修复后的文件内容写回工作空间。"""
+    """Write fixed file contents back to workspace."""
     for filename, content in files.items():
         filepath = os.path.join(workspace_path, filename)
         await ctx.tools.write_file(filepath, content)
@@ -95,7 +95,7 @@ async def _attempt_debug_fix(
     error_log: str,
     stdout: str,
 ) -> bool:
-    """让 LLM 诊断并修复错误。如果成功应用修复则返回 True。"""
+    """Ask LLM to diagnose and fix the error. Returns True if a fix was applied."""
     current_files = await _read_mutable_files(ctx, workspace_path, mutable_files)
 
     response = await ctx.tools.llm_chat(

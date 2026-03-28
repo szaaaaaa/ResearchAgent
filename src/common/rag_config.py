@@ -63,7 +63,7 @@ def scoped_collection_name(
     base_name: str,
     embedding_model: str | None = None,
 ) -> str:
-    """根据实际使用的嵌入模型生成隔离的集合名称。"""
+    """Derive a collection name that is isolated per effective embedding model."""
     scoped_enabled = as_bool(get_by_dotted(cfg, "index.scope_collections_by_embedding_model"), True)
     if not scoped_enabled:
         return base_name

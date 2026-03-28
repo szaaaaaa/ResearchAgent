@@ -48,7 +48,6 @@ class NodeRunner:
         event_sink: EventSink | None = None,
         config: dict | None = None,
         knowledge_graph=None,
-        skill_metrics_store=None,
     ) -> None:
         self._role_registry = role_registry
         self._skill_registry = skill_registry
@@ -59,7 +58,6 @@ class NodeRunner:
         self._event_sink = event_sink
         self._config = dict(config or {})
         self._knowledge_graph = knowledge_graph
-        self._skill_metrics_store = skill_metrics_store
 
     async def run_node(self, *, run_id: str, node: PlanNode, user_request: str = "") -> NodeExecutionResult:
         self._policy.check_budget()
@@ -99,7 +97,6 @@ class NodeRunner:
                 )
             )
             self._observation_store.save(observation)
-            self._record_metrics(skill_id, observation)
             self._emit(
                 ObservationEvent(
                     ts=_now_iso(),
@@ -243,8 +240,6 @@ class NodeRunner:
             )
 
         self._observation_store.save(observation)
-        self._record_metrics(skill_id, observation)
-        self._maybe_refresh_registry(artifacts)
         self._emit(
             ObservationEvent(
                 ts=_now_iso(),
@@ -286,12 +281,7 @@ class NodeRunner:
             return self._skill_registry.get(node.allowed_skills[0])
 
         available_types = {artifact.artifact_type for artifact in input_artifacts}
-        selection_cfg = self._config.get("skill_selection") or {}
-        weight_output = float(selection_cfg.get("weight_output", 0.7))
-        weight_utility = float(selection_cfg.get("weight_utility", 0.3))
-        max_expected = max(1, len(node.expected_outputs))
-
-        candidates: list[tuple[LoadedSkill, float, int]] = []
+        candidates: list[tuple[LoadedSkill, int, int]] = []
         for position, skill_id in enumerate(node.allowed_skills):
             loaded_skill = self._skill_registry.get(skill_id)
             required_artifact_types = [
@@ -302,12 +292,7 @@ class NodeRunner:
             if any(required_type not in available_types for required_type in required_artifact_types):
                 continue
             output_score = len(set(node.expected_outputs) & set(loaded_skill.spec.output_artifacts))
-            normalized_output = output_score / max_expected
-            utility = 0.5
-            if self._skill_metrics_store is not None:
-                utility = self._skill_metrics_store.get_utility(loaded_skill.spec.id)
-            combined = normalized_output * weight_output + utility * weight_utility
-            candidates.append((loaded_skill, combined, position))
+            candidates.append((loaded_skill, output_score, position))
 
         if not candidates:
             raise ValueError(
@@ -419,21 +404,6 @@ class NodeRunner:
                 key = _make_cite_key(source, seen_keys)
                 key_map[key] = title
         return key_map
-
-    def _record_metrics(self, skill_id: str, observation: Observation) -> None:
-        if self._skill_metrics_store is not None:
-            self._skill_metrics_store.record_execution(
-                skill_id=skill_id,
-                status=observation.status.value,
-                confidence=observation.confidence,
-                duration_ms=observation.duration_ms,
-            )
-
-    def _maybe_refresh_registry(self, artifacts: list[ArtifactRecord]) -> None:
-        for artifact in artifacts:
-            if artifact.payload.get("requires_registry_refresh"):
-                self._skill_registry.refresh()
-                return
 
     def _build_error_observation(
         self,

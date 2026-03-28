@@ -1,1 +1,1 @@
-"""内置技能包，自第5阶段起存放于此。"""
+"""Built-in skill packages live here starting in Phase 5."""

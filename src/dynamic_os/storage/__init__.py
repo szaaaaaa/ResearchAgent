@@ -1,4 +1,4 @@
-"""Dynamic Research OS 的内存存储接口与实现。"""
+"""In-memory storage interfaces and implementations for Dynamic Research OS."""
 
 from src.dynamic_os.storage.memory import (
     ArtifactStore,
