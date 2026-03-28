@@ -1,4 +1,4 @@
-"""Tool discovery, registry, and gateway exports for Dynamic Research OS."""
+"""Dynamic Research OS 的工具发现、注册表和网关导出。"""
 
 from src.dynamic_os.tools.discovery import McpServerConfig, McpToolConfig, discover_mcp_tools
 from src.dynamic_os.tools.gateway import ToolGateway

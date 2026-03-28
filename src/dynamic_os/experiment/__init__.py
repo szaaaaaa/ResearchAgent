@@ -1,1 +1,1 @@
-"""Experiment workspace and loop management."""
+"""实验工作区与循环管理。"""

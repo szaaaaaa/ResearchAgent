@@ -6,7 +6,7 @@ import yaml
 
 
 def load_custom_skill_additions(cwd: Path) -> dict[str, list[str]]:
-    """Load role-to-skill additions from <cwd>/skills/skills_config.yaml."""
+    """从 <cwd>/skills/skills_config.yaml 加载角色到技能的附加映射。"""
     config_path = cwd / "skills" / "skills_config.yaml"
     if not config_path.is_file():
         return {}

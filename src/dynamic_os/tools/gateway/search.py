@@ -8,9 +8,9 @@ from src.dynamic_os.tools.registry import ToolCapability
 
 
 class SearchGateway:
-    """Routes searches: academic → paper_search MCP, web → internal search."""
+    """路由搜索：学术搜索 → paper_search MCP，网页搜索 → 内部搜索。"""
 
-    # Internal search server handles web only; external MCP handles academic.
+    # 内部搜索服务器仅处理网页搜索；外部 MCP 处理学术搜索。
     _WEB_SERVER_ID = "search"
     _ACADEMIC_SERVER_ID = "paper_search"
 
