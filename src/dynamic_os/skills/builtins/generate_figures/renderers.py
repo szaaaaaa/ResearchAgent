@@ -13,14 +13,24 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-import matplotlib as mpl
-
-mpl.use("Agg")  # 非交互后端，必须在 import pyplot 之前
-
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-
 log = logging.getLogger(__name__)
+
+# matplotlib / numpy 延迟导入，CI 环境不一定安装
+plt: Any = None
+np: Any = None
+
+
+def _ensure_mpl() -> None:
+    """首次使用时导入 matplotlib 和 numpy。"""
+    global plt, np
+    if plt is not None:
+        return
+    import matplotlib as mpl
+    mpl.use("Agg")
+    import matplotlib.pyplot as _plt
+    import numpy as _np
+    plt = _plt
+    np = _np
 
 # ---------------------------------------------------------------------------
 # mermaid-cli 检测（模块级缓存）
@@ -52,7 +62,7 @@ _PALETTE = [
 ]
 
 
-def _save_dual(fig: plt.Figure, base_path: Path) -> list[str]:
+def _save_dual(fig: Any, base_path: Path) -> list[str]:
     """将 matplotlib Figure 保存为 PDF + PNG，关闭 fig，返回路径列表。"""
     base_path.parent.mkdir(parents=True, exist_ok=True)
     paths: list[str] = []
@@ -81,6 +91,7 @@ def _get_data(spec: dict[str, Any], key: str, expected_type: type = list) -> Any
 
 def _bar_chart(spec: dict[str, Any], base_path: Path) -> list[str]:
     """柱状图。"""
+    _ensure_mpl()
     data = spec.get("data", {})
     categories = _get_data(spec, "categories")
     values = _get_data(spec, "values")
@@ -107,6 +118,7 @@ def _bar_chart(spec: dict[str, Any], base_path: Path) -> list[str]:
 
 def _grouped_bar_chart(spec: dict[str, Any], base_path: Path) -> list[str]:
     """分组柱状图。"""
+    _ensure_mpl()
     data = spec.get("data", {})
     categories = _get_data(spec, "categories")
     groups: dict[str, list] = _get_data(spec, "groups", dict)
@@ -135,6 +147,7 @@ def _grouped_bar_chart(spec: dict[str, Any], base_path: Path) -> list[str]:
 
 def _line_chart(spec: dict[str, Any], base_path: Path) -> list[str]:
     """折线图 / 趋势图。"""
+    _ensure_mpl()
     data = spec.get("data", {})
     series: dict[str, dict] = _get_data(spec, "series", dict)
     markers = data.get("markers", True)
@@ -158,6 +171,7 @@ def _line_chart(spec: dict[str, Any], base_path: Path) -> list[str]:
 
 def _scatter_plot(spec: dict[str, Any], base_path: Path) -> list[str]:
     """散点图。"""
+    _ensure_mpl()
     data = spec.get("data", {})
     series: dict[str, dict] = _get_data(spec, "series", dict)
 
@@ -185,6 +199,7 @@ def _scatter_plot(spec: dict[str, Any], base_path: Path) -> list[str]:
 
 def _heatmap(spec: dict[str, Any], base_path: Path) -> list[str]:
     """热力图。"""
+    _ensure_mpl()
     data = spec.get("data", {})
     x_labels = _get_data(spec, "x_labels")
     y_labels = _get_data(spec, "y_labels")
@@ -218,6 +233,7 @@ def _heatmap(spec: dict[str, Any], base_path: Path) -> list[str]:
 
 def _pie_chart(spec: dict[str, Any], base_path: Path) -> list[str]:
     """饼图。"""
+    _ensure_mpl()
     data = spec.get("data", {})
     labels = _get_data(spec, "labels")
     values = _get_data(spec, "values")
@@ -238,6 +254,7 @@ def _pie_chart(spec: dict[str, Any], base_path: Path) -> list[str]:
 
 def _network_graph(spec: dict[str, Any], base_path: Path) -> list[str]:
     """网络关系图（引用网络、概念关系等）。"""
+    _ensure_mpl()
     import networkx as nx
 
     data = spec.get("data", {})
