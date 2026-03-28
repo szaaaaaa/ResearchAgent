@@ -5,7 +5,7 @@ import sqlite3
 
 from datetime import datetime, timezone
 
-# Node types
+# 节点类型
 NODE_PAPER = "Paper"
 NODE_CONCEPT = "Concept"
 NODE_METHOD = "Method"
@@ -15,7 +15,7 @@ NODE_RESEARCHER = "Researcher"
 
 ALL_NODE_TYPES = (NODE_PAPER, NODE_CONCEPT, NODE_METHOD, NODE_DATASET, NODE_RESULT, NODE_RESEARCHER)
 
-# Edge types
+# 边类型
 EDGE_USES = "USES"
 EDGE_EVALUATES_ON = "EVALUATES_ON"
 EDGE_ACHIEVES = "ACHIEVES"
@@ -43,7 +43,7 @@ ALL_EDGE_TYPES = (
 
 class KnowledgeGraph:
     def __init__(self, conn: sqlite3.Connection, run_id: str) -> None:
-        import networkx  # lazy import – optional dependency
+        import networkx  # 延迟导入 - 可选依赖
         self._graph: networkx.DiGraph = networkx.DiGraph()
         self._conn: sqlite3.Connection | None = conn
         self._run_id = run_id

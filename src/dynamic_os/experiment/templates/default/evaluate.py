@@ -1,4 +1,4 @@
-"""Evaluate a trained model checkpoint on the test set."""
+"""在测试集上评估训练好的模型检查点。"""
 
 import sys
 from pathlib import Path

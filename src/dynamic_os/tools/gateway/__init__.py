@@ -18,7 +18,7 @@ EventSink = Callable[[object], None]
 
 
 class ToolGateway:
-    """Unified tool execution layer for all skills."""
+    """所有技能的统一工具执行层。"""
 
     def __init__(
         self,

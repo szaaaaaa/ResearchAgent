@@ -861,7 +861,7 @@ class ConfiguredToolBackend:
         return None
 
     def search_sources(self, query: str, max_results: int, *, source: str = "auto") -> dict[str, Any]:
-        """Web-only search. Academic search is handled by paper_search MCP."""
+        """仅限网页搜索。学术搜索由 paper_search MCP 处理。"""
         if not query.strip():
             return {"results": [], "warnings": []}
         from src.ingest.web_fetcher import (

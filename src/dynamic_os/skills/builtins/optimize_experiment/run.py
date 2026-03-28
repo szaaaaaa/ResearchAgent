@@ -63,7 +63,7 @@ async def run(ctx: SkillContext) -> SkillOutput:
 
     prior_iteration = _find_artifact(ctx, "ExperimentIteration")
 
-    # --- Config ---
+    # --- 配置 ---
     experiment_cfg = ctx.config.get("agent", {}).get("experiment_plan", {})
     max_iterations = int(experiment_cfg.get("max_iterations", 6))
     objective = str(experiment_cfg.get("objective", ""))
@@ -74,7 +74,7 @@ async def run(ctx: SkillContext) -> SkillOutput:
     patience = int(stopping_cfg.get("patience", 3))
     min_improvement = float(stopping_cfg.get("min_improvement", 0.001))
 
-    # --- Prior state ---
+    # --- 先前状态 ---
     if prior_iteration is not None:
         prior_payload = dict(prior_iteration.payload)
         iteration = int(prior_payload.get("iteration", 0)) + 1
@@ -97,11 +97,11 @@ async def run(ctx: SkillContext) -> SkillOutput:
     results_status = str(results_payload.get("status", ""))
     workspace_path = str(results_payload.get("workspace_path", ""))
 
-    # Get mutable_files from the ExperimentPlan that produced these results
+    # 从生成这些结果的 ExperimentPlan 中获取 mutable_files
     experiment_plan = _find_artifact(ctx, "ExperimentPlan")
     mutable_files = list((experiment_plan.payload if experiment_plan else {}).get("mutable_files", []))
 
-    # --- Handle execution failure ---
+    # --- 处理执行失败 ---
     if results_status == "failed" or experiment_results.payload.get("metrics") == {}:
         consecutive_failures += 1
 
@@ -115,7 +115,7 @@ async def run(ctx: SkillContext) -> SkillOutput:
         should_continue = iteration < max_iterations
         metric_history = prior_metric_history + [{"iteration": iteration, "metrics": {}, "status": "failed"}]
 
-        # Restore best snapshot if we have one
+        # 如果有最佳快照则恢复
         if prior_best_snapshot and workspace_path:
             restore_snapshot(Path(workspace_path), prior_best_snapshot)
 
@@ -146,18 +146,18 @@ async def run(ctx: SkillContext) -> SkillOutput:
         )
         return SkillOutput(success=True, output_artifacts=[artifact])
 
-    # --- Successful execution: evaluate metrics ---
+    # --- 执行成功：评估指标 ---
     current_metrics = _extract_metrics(results_payload)
-    consecutive_failures = 0  # Reset on success
+    consecutive_failures = 0  # 成功时重置
 
     metric_history = prior_metric_history + [{"iteration": iteration, "metrics": current_metrics}]
 
-    # --- Keep/Revert decision ---
+    # --- 保留/回退决策 ---
     if not prior_best:
-        # First successful iteration — always keep
+        # 首次成功迭代 - 始终保留
         verdict = "keep"
         best_metric = dict(current_metrics)
-        # Take snapshot of current workspace as "best"
+        # 将当前工作空间快照保存为"最佳"
         if workspace_path and mutable_files:
             best_snapshot = snapshot_mutable(Path(workspace_path), mutable_files)
         else:
@@ -176,11 +176,11 @@ async def run(ctx: SkillContext) -> SkillOutput:
         best_metric = dict(prior_best)
         best_snapshot = dict(prior_best_snapshot)
         no_improvement_streak += 1
-        # Restore workspace to best snapshot
+        # 将工作空间恢复到最佳快照
         if prior_best_snapshot and workspace_path:
             restore_snapshot(Path(workspace_path), prior_best_snapshot)
 
-    # --- Stopping strategy ---
+    # --- 停止策略 ---
     if no_improvement_streak >= patience:
         strategy = "early_stop"
     elif iteration >= max_iterations:
@@ -190,7 +190,7 @@ async def run(ctx: SkillContext) -> SkillOutput:
 
     should_continue = strategy != "early_stop" and iteration < max_iterations
 
-    # --- LLM: modification suggestions + lesson extraction ---
+    # --- LLM：修改建议 + 经验提取 ---
     llm_response = await ctx.tools.llm_chat(
         [
             {

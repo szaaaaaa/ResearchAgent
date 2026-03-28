@@ -1,4 +1,4 @@
-"""Phase 1 contract exports for Dynamic Research OS."""
+"""Dynamic Research OS 第一阶段合约导出。"""
 
 from src.dynamic_os.contracts.artifact import ArtifactRecord
 from src.dynamic_os.contracts.events import (

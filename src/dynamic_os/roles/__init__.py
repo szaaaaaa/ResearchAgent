@@ -1,4 +1,4 @@
-"""Role registry package for Dynamic Research OS."""
+"""Dynamic Research OS 的角色注册表包。"""
 
 from src.dynamic_os.roles.registry import RoleRegistry
 
