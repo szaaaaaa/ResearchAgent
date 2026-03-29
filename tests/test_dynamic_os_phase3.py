@@ -20,7 +20,6 @@ from src.dynamic_os.contracts.skill_spec import SkillSpec
 from src.dynamic_os.executor import Executor, NodeRunner
 from src.dynamic_os.planner import Planner, PlannerOutputError, assess_review_need, decide_termination
 from src.dynamic_os.planner.prompts import build_planner_messages
-from src.dynamic_os.planner.routing import derive_role_routing_policy
 from src.dynamic_os.policy.engine import PolicyEngine
 from src.dynamic_os.roles.registry import RoleRegistry
 from src.dynamic_os.skills.builtins.search_papers.run import run as search_papers_run
@@ -207,7 +206,6 @@ def _plan_json(
     *,
     run_id: str = "run_1",
     planning_iteration: int = 0,
-    needs_review: bool = False,
     inputs: list[str] | None = None,
 ) -> str:
     default_expected_outputs = {
@@ -234,7 +232,6 @@ def _plan_json(
                     "success_criteria": ["at_least_one_source"],
                     "failure_policy": "replan",
                     "expected_outputs": default_expected_outputs.get(skill_id, []),
-                    "needs_review": needs_review,
                 }
             ],
             "edges": [],
@@ -643,7 +640,6 @@ def test_planner_accepts_inserted_reviewer_node() -> None:
                 _plan_json(
                     "reviewer",
                     "review_artifact",
-                    needs_review=True,
                     inputs=["artifact:ResearchReport:report_1"],
                 )
             ]
@@ -663,7 +659,6 @@ def test_planner_accepts_inserted_reviewer_node() -> None:
     plan = asyncio.run(planner.plan(run_id="run_1", user_request="Review the final report", planning_iteration=0))
 
     assert plan.nodes[0].role.value == "reviewer"
-    assert plan.nodes[0].needs_review is True
 
 
 def test_planner_rejects_unloaded_skills() -> None:
@@ -698,7 +693,6 @@ def test_planner_prompt_only_exposes_loaded_allowlisted_skills() -> None:
         artifact_summary=[],
         artifact_refs=[],
         artifact_ref_templates=planner._artifact_ref_templates(),
-        role_routing_policy=derive_role_routing_policy(user_request="Find papers", artifacts=[]),
         observation_summary=[],
         budget_snapshot={},
         planning_iteration=0,
@@ -707,7 +701,6 @@ def test_planner_prompt_only_exposes_loaded_allowlisted_skills() -> None:
     assert "search_papers" in messages[0]["content"]
     assert "custom_search" not in messages[0]["content"]
     assert "artifact_ref_template" in messages[0]["content"]
-    assert "required_roles" in messages[0]["content"]
 
 
 
@@ -1778,7 +1771,6 @@ def test_phase5_end_to_end_research_loop_uses_builtin_skills() -> None:
                                 "success_criteria": ["topic_is_scoped"],
                                 "failure_policy": "replan",
                                 "expected_outputs": ["TopicBrief", "SearchPlan"],
-                                "needs_review": False,
                             },
                             {
                                 "node_id": "node_search_1",
@@ -1789,7 +1781,6 @@ def test_phase5_end_to_end_research_loop_uses_builtin_skills() -> None:
                                 "success_criteria": ["at_least_one_source"],
                                 "failure_policy": "replan",
                                 "expected_outputs": ["SourceSet"],
-                                "needs_review": False,
                             },
                             {
                                 "node_id": "node_fetch_1",
@@ -1800,7 +1791,6 @@ def test_phase5_end_to_end_research_loop_uses_builtin_skills() -> None:
                                 "success_criteria": ["sources_enriched"],
                                 "failure_policy": "replan",
                                 "expected_outputs": ["SourceSet"],
-                                "needs_review": False,
                             },
                             {
                                 "node_id": "node_notes_1",
@@ -1811,7 +1801,6 @@ def test_phase5_end_to_end_research_loop_uses_builtin_skills() -> None:
                                 "success_criteria": ["notes_created"],
                                 "failure_policy": "replan",
                                 "expected_outputs": ["PaperNotes"],
-                                "needs_review": False,
                             },
                             {
                                 "node_id": "node_evidence_1",
@@ -1822,7 +1811,6 @@ def test_phase5_end_to_end_research_loop_uses_builtin_skills() -> None:
                                 "success_criteria": ["evidence_synthesized"],
                                 "failure_policy": "replan",
                                 "expected_outputs": ["EvidenceMap", "GapMap"],
-                                "needs_review": False,
                             },
                             {
                                 "node_id": "node_report_1",
@@ -1833,7 +1821,6 @@ def test_phase5_end_to_end_research_loop_uses_builtin_skills() -> None:
                                 "success_criteria": ["report_drafted"],
                                 "failure_policy": "replan",
                                 "expected_outputs": ["ResearchReport"],
-                                "needs_review": False,
                             },
                             {
                                 "node_id": "node_review_1",
@@ -1844,7 +1831,6 @@ def test_phase5_end_to_end_research_loop_uses_builtin_skills() -> None:
                                 "success_criteria": ["review_completed"],
                                 "failure_policy": "replan",
                                 "expected_outputs": ["ReviewVerdict"],
-                                "needs_review": True,
                             },
                         ],
                         "edges": [
@@ -1874,7 +1860,6 @@ def test_phase5_end_to_end_research_loop_uses_builtin_skills() -> None:
                                 "success_criteria": [],
                                 "failure_policy": "replan",
                                 "expected_outputs": ["ResearchReport"],
-                                "needs_review": False,
                             }
                         ],
                         "edges": [],
@@ -1917,7 +1902,7 @@ def test_phase5_end_to_end_research_loop_uses_builtin_skills() -> None:
         )
     )
 
-    assert result.termination_reason == "final_artifact_produced"
+    assert result.termination_reason == "planner_terminated"
     assert "artifact:ResearchReport:node_report_1_research_report" in result.final_artifacts
     assert "artifact:ReviewVerdict:node_review_1_review_verdict" in result.final_artifacts
     assert {record.artifact_type for record in artifact_store.list_all()} == {
@@ -2001,12 +1986,11 @@ def test_executor_short_circuits_when_final_artifact_is_produced_without_review_
                         success_criteria=["generated_report"],
                         failure_policy="replan",
                         expected_outputs=["ResearchReport"],
-                        needs_review=False,
                     )
                 ],
                 edges=[],
                 planner_notes=[],
-                terminate=False,
+                terminate=True,
             )
         ]
     )
@@ -2026,7 +2010,7 @@ def test_executor_short_circuits_when_final_artifact_is_produced_without_review_
         )
     )
 
-    assert result.termination_reason == "final_artifact_produced"
+    assert result.termination_reason == "planner_terminated"
     assert planner.calls == 1
     assert "artifact:ResearchReport:report_budget_1" in result.final_artifacts
     assert events[-1].type == "run_terminate"
@@ -2059,7 +2043,6 @@ def test_phase6_api_run_streams_dynamic_runtime_contract(monkeypatch: pytest.Mon
                             "success_criteria": [],
                             "failure_policy": "replan",
                             "expected_outputs": ["ReviewVerdict"],
-                            "needs_review": True,
                         }
                     ],
                     "edges": [],
@@ -2094,7 +2077,6 @@ def test_phase6_api_run_streams_dynamic_runtime_contract(monkeypatch: pytest.Mon
                         "success_criteria": [],
                         "failure_policy": "replan",
                         "expected_outputs": ["ReviewVerdict"],
-                        "needs_review": True,
                     }
                 ],
                 "edges": [],
@@ -2229,7 +2211,6 @@ def test_phase6_api_run_failure_still_emits_final_state(monkeypatch: pytest.Monk
                             "success_criteria": [],
                             "failure_policy": "replan",
                             "expected_outputs": ["SourceSet"],
-                            "needs_review": False,
                         }
                     ],
                     "edges": [],
@@ -2548,7 +2529,6 @@ def test_phase7_runtime_uses_terminating_plan_as_final_route_plan(
                         "success_criteria": [],
                         "failure_policy": "replan",
                         "expected_outputs": ["ResearchReport"],
-                        "needs_review": False,
                     }
                 ],
                 "edges": [],
